@@ -96,6 +96,16 @@ app.MapGet("/media/accounts/{accountId:guid}/posts/{postId:guid}/thumbnail", asy
         return Results.NotFound();
     }
 
+    var thumbnailCacheDirectory = Path.Combine(mediaCacheRoot, "accounts", accountId.ToString("N"), "posts", postId.ToString("N"));
+    var staleCachedThumbnail = await TryReadAnyCachedImageAsync(thumbnailCacheDirectory, cancellationToken);
+
+    if (!enableThumbnailCaptureFallback)
+    {
+        return staleCachedThumbnail is null
+            ? Results.NotFound()
+            : Results.File(staleCachedThumbnail.Value.Bytes, staleCachedThumbnail.Value.ContentType);
+    }
+
     var sourceUrl = post.ThumbnailUrl;
     if (string.IsNullOrWhiteSpace(sourceUrl))
     {
@@ -112,7 +122,6 @@ app.MapGet("/media/accounts/{accountId:guid}/posts/{postId:guid}/thumbnail", asy
         return Results.NotFound();
     }
 
-    var thumbnailCacheDirectory = Path.Combine(mediaCacheRoot, "accounts", accountId.ToString("N"), "posts", postId.ToString("N"));
     var cachedThumbnail = await TryReadCachedImageAsync(thumbnailCacheDirectory, sourceUrl, cancellationToken);
     if (cachedThumbnail is not null)
     {
@@ -127,18 +136,12 @@ app.MapGet("/media/accounts/{accountId:guid}/posts/{postId:guid}/thumbnail", asy
         return Results.File(downloadedImage.Value.Bytes, downloadedImage.Value.ContentType);
     }
 
-    var staleCachedThumbnail = await TryReadAnyCachedImageAsync(thumbnailCacheDirectory, cancellationToken);
     if (staleCachedThumbnail is not null)
     {
         return Results.File(staleCachedThumbnail.Value.Bytes, staleCachedThumbnail.Value.ContentType);
     }
 
     if (string.IsNullOrWhiteSpace(post.Url))
-    {
-        return Results.NotFound();
-    }
-
-    if (!enableThumbnailCaptureFallback)
     {
         return Results.NotFound();
     }
