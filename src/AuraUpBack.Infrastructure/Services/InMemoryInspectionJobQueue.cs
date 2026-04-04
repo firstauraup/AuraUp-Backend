@@ -87,6 +87,22 @@ internal sealed class InMemoryInspectionJobQueue : IInspectionJobQueue
         }
     }
 
+    public InspectionJobRequest? Claim(Guid jobId)
+    {
+        lock (_sync)
+        {
+            if (!_requestsByJobId.TryGetValue(jobId, out var request))
+            {
+                return null;
+            }
+
+            _requestsByJobId.Remove(jobId);
+            _manualQueue.Remove(jobId);
+            _monitoringQueue.Remove(jobId);
+            return request;
+        }
+    }
+
     public ValueTask<InspectionJobRequest> DequeueAsync(CancellationToken cancellationToken)
     {
         return new ValueTask<InspectionJobRequest>(DequeueCoreAsync(cancellationToken));

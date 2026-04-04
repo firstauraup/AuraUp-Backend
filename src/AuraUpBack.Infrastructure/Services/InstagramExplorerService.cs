@@ -170,6 +170,7 @@ internal sealed partial class InstagramExplorerService(
                 """
                 () => {
                   const text = document.body?.innerText || "";
+                  const html = document.documentElement?.outerHTML || "";
                   const accountAnchor = Array.from(document.querySelectorAll("a[href]"))
                     .map((anchor) => anchor.getAttribute("href") || "")
                     .find((href) => /^\/[A-Za-z0-9._]+\/$/.test(href));
@@ -179,6 +180,7 @@ internal sealed partial class InstagramExplorerService(
                     description: document.querySelector('meta[property="og:description"]')?.getAttribute('content') || "",
                     image: document.querySelector('meta[property="og:image"]')?.getAttribute('content') || "",
                     text,
+                    html,
                     timeValue: document.querySelector('time')?.getAttribute('datetime') || "",
                     pageUrl: window.location.href,
                     accountPath: accountAnchor || ""
@@ -191,7 +193,7 @@ internal sealed partial class InstagramExplorerService(
                 return null;
             }
 
-            var accountHandle = ExtractHandle(snapshot.AccountPath, snapshot.Description);
+            var accountHandle = ExtractHandle(snapshot.AccountPath, snapshot.Description, snapshot.Html);
             var likes = TryParseMetric(snapshot.Description, "likes");
             var comments = TryParseMetric(snapshot.Description, "comments");
             var shares = Math.Max(
@@ -429,11 +431,20 @@ internal sealed partial class InstagramExplorerService(
             : description.Split(':').Last().Trim();
     }
 
-    private static string ExtractHandle(string accountPath, string description)
+    private static string ExtractHandle(string accountPath, string description, string html)
     {
         if (!string.IsNullOrWhiteSpace(accountPath))
         {
             return accountPath.Trim('/').ToLowerInvariant();
+        }
+
+        var usernameMatch = Regex.Match(
+            html ?? string.Empty,
+            "\"username\":\"(?<handle>[A-Za-z0-9._]{2,})\"",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (usernameMatch.Success)
+        {
+            return usernameMatch.Groups["handle"].Value.ToLowerInvariant();
         }
 
         var match = Regex.Match(description ?? string.Empty, @"@?(?<handle>[A-Za-z0-9._]{2,})");
@@ -567,6 +578,7 @@ internal sealed partial class InstagramExplorerService(
         public string Description { get; init; } = string.Empty;
         public string Image { get; init; } = string.Empty;
         public string Text { get; init; } = string.Empty;
+        public string Html { get; init; } = string.Empty;
         public string TimeValue { get; init; } = string.Empty;
         public string PageUrl { get; init; } = string.Empty;
         public string AccountPath { get; init; } = string.Empty;

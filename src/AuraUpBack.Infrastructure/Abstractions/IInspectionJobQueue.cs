@@ -5,6 +5,7 @@ public interface IInspectionJobQueue
     event Action<InspectionJobStatus>? StatusChanged;
     InspectionJobStatus Enqueue(Guid accountId, string source);
     InspectionJobStatus? GetLatest(Guid accountId);
+    InspectionJobRequest? Claim(Guid jobId);
     ValueTask<InspectionJobRequest> DequeueAsync(CancellationToken cancellationToken);
     void MarkRunning(Guid jobId);
     void MarkCompleted(Guid jobId);

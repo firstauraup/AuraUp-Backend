@@ -12,6 +12,7 @@ namespace AuraUpBack.Infrastructure.Services;
 public sealed class MonitoringBackgroundService(
     ITrackedAccountRepository trackedAccountRepository,
     IInspectionJobQueue inspectionJobQueue,
+    InspectionJobRunner inspectionJobRunner,
     IOptions<AuraUpBackStorageOptions> options,
     ILogger<MonitoringBackgroundService> logger) : BackgroundService
 {
@@ -49,7 +50,8 @@ public sealed class MonitoringBackgroundService(
                         continue;
                     }
 
-                    inspectionJobQueue.Enqueue(account.Id, "Monitoring");
+                    var job = inspectionJobQueue.Enqueue(account.Id, "Monitoring");
+                    inspectionJobRunner.Schedule(job.JobId);
                     logger.LogInformation(
                         "Monitoreo encolado para @{Handle} con cadencia de {CadenceMinutes} minutos",
                         account.Handle,

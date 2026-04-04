@@ -37,6 +37,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAlertSignalRepository, DbAlertSignalRepository>();
         services.AddSingleton<IInspectionJobQueue, InMemoryInspectionJobQueue>();
         services.AddSingleton<IInspectionProgressReporter, InspectionProgressReporter>();
+        services.AddSingleton<InspectionJobRunner>();
         services.AddHttpClient();
         services.AddSingleton<IInstagramCredentialVault, InstagramCredentialVault>();
         services.AddSingleton<IInstagramSettingsService, InstagramSettingsService>();
@@ -47,7 +48,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IInstagramInspectionProvider, RpaInstagramInspectionProvider>();
         services.AddSingleton<IInstagramResearchAutomation, InstagramResearchAutomation>();
         services.AddSingleton<IVideoTranscriptionService, MockVideoTranscriptionService>();
-        services.AddHostedService<InspectionJobBackgroundService>();
 
         if (enableMonitoringService)
         {

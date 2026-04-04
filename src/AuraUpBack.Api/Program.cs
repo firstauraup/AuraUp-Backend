@@ -26,6 +26,7 @@ using AuraUpBack.Infrastructure.Abstractions;
 using AuraUpBack.Infrastructure.Options;
 using AuraUpBack.Infrastructure.Services;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Playwright;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -44,6 +45,12 @@ builder.Services.AddSingleton<IThumbnailCacheQueue, InMemoryThumbnailCacheQueue>
 builder.Services.AddSingleton<ThumbnailProxyService>();
 builder.Services.AddHostedService<ThumbnailCacheBackgroundService>();
 builder.Services.AddSignalR();
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+});
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AuraUpFront", policy =>
@@ -67,6 +74,7 @@ inspectionJobQueue.StatusChanged += status =>
     _ = BroadcastInspectionStatusAsync(hubContext, status);
 };
 
+app.UseForwardedHeaders();
 app.UseCors("AuraUpFront");
 app.UseMiddleware<AdminAuthMiddleware>();
 
@@ -319,9 +327,11 @@ app.MapPut("/api/accounts/{accountId:guid}", async (
 
 app.MapPost("/api/accounts/{accountId:guid}/inspect", (
     Guid accountId,
-    IInspectionJobQueue inspectionJobQueue) =>
+    IInspectionJobQueue inspectionJobQueue,
+    InspectionJobRunner inspectionJobRunner) =>
 {
     var job = inspectionJobQueue.Enqueue(accountId, "Manual");
+    inspectionJobRunner.Schedule(job.JobId);
     return Results.Accepted($"/api/accounts/{accountId}/inspect/status", job);
 });
 
