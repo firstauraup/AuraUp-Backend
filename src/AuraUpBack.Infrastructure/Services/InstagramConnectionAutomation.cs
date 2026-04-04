@@ -69,11 +69,13 @@ internal sealed class InstagramConnectionAutomation(
             throw new InvalidOperationException("The Instagram connection is not waiting for a verification code.");
         }
 
-        if (!File.Exists(connection.SessionStatePath))
+        var sessionStatePath = ResolveSessionStatePath(connection);
+        if (!File.Exists(sessionStatePath))
         {
             throw new InvalidOperationException("The verification session was not found. Start the connection again.");
         }
 
+        connection.SessionStatePath = sessionStatePath;
         return await CompleteVerificationAsync(connection, code.Trim(), cancellationToken);
     }
 
@@ -90,9 +92,11 @@ internal sealed class InstagramConnectionAutomation(
             return ToState(connection);
         }
 
-        var sessionExists = File.Exists(connection.SessionStatePath);
-        if (sessionExists && await SessionLooksValidAsync(connection.SessionStatePath, cancellationToken))
+        var sessionStatePath = ResolveSessionStatePath(connection);
+        var sessionExists = File.Exists(sessionStatePath);
+        if (sessionExists && await SessionLooksValidAsync(sessionStatePath, cancellationToken))
         {
+            connection.SessionStatePath = sessionStatePath;
             connection.MarkValidated(DateTime.UtcNow);
             await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
             return ToState(connection);
@@ -133,6 +137,7 @@ internal sealed class InstagramConnectionAutomation(
     private async Task<InstagramConnectionState> LoginAsync(InstagramConnection connection, string password, CancellationToken cancellationToken)
     {
         var nowUtc = DateTime.UtcNow;
+        connection.SessionStatePath = ResolveSessionStatePath(connection);
         connection.MarkConnecting(nowUtc);
         await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
 
@@ -817,14 +822,15 @@ internal sealed class InstagramConnectionAutomation(
     {
         var settings = settingsService.Current;
         var provider = string.IsNullOrWhiteSpace(settings.Provider) ? _options.Provider : settings.Provider;
+        var sessionStatePath = ResolveSessionStatePath(connection);
 
         return new InstagramConnectionState(
             provider,
             connection.Username,
             connection.Status,
             connection.HasStoredCredentials,
-            connection.SessionStatePath,
-            File.Exists(connection.SessionStatePath),
+            sessionStatePath,
+            File.Exists(sessionStatePath),
             connection.VerificationUrl,
             connection.LastLoginAtUtc,
             connection.LastValidatedAtUtc,
@@ -853,6 +859,18 @@ internal sealed class InstagramConnectionAutomation(
             _options.RpaHeadless,
             _options.RpaMaxPosts,
             _options.AllowPublicProfileReadWithoutSession);
+    }
+
+    private string ResolveSessionStatePath(InstagramConnection connection)
+    {
+        var configuredPath = ResolveSessionStatePath(_options.RpaSessionStatePath);
+
+        if (!string.IsNullOrWhiteSpace(connection.SessionStatePath) && File.Exists(connection.SessionStatePath))
+        {
+            return connection.SessionStatePath;
+        }
+
+        return configuredPath;
     }
 
     private static string ResolveSessionStatePath(string configuredPath)
