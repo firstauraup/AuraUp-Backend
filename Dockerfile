@@ -7,6 +7,7 @@ COPY src/AuraUpBack.Application/AuraUpBack.Application.csproj src/AuraUpBack.App
 COPY src/AuraUpBack.Infrastructure/AuraUpBack.Infrastructure.csproj src/AuraUpBack.Infrastructure/
 COPY src/AuraUpBack.Api/AuraUpBack.Api.csproj src/AuraUpBack.Api/
 COPY src/AuraUpBack.Worker/AuraUpBack.Worker.csproj src/AuraUpBack.Worker/
+COPY src/AuraUpBack.RpaSessionTool/AuraUpBack.RpaSessionTool.csproj src/AuraUpBack.RpaSessionTool/
 
 RUN dotnet restore AuraUpBack.sln
 
