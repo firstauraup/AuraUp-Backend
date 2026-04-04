@@ -1,5 +1,6 @@
 using AuraUpBack.Application.Contracts;
 using AuraUpBack.Application.Mappers;
+using AuraUpBack.Application.Abstractions;
 using AuraUpBack.Domain.Entities;
 using AuraUpBack.Domain.Models;
 using AuraUpBack.Domain.Repositories;
@@ -12,7 +13,8 @@ public sealed record InspectTrackedAccountCommand(Guid AccountId, Guid? JobId = 
 internal sealed class InspectTrackedAccountCommandHandler(
     ITrackedAccountRepository trackedAccountRepository,
     IInstagramResearchAutomation instagramResearchAutomation,
-    IAlertSignalRepository alertSignalRepository)
+    IAlertSignalRepository alertSignalRepository,
+    IInspectionProgressReporter inspectionProgressReporter)
     : Abstractions.ICommandHandler<InspectTrackedAccountCommand, TrackedAccountOverviewDto>
 {
     public async Task<TrackedAccountOverviewDto> HandleAsync(InspectTrackedAccountCommand command, CancellationToken cancellationToken)
@@ -22,13 +24,32 @@ internal sealed class InspectTrackedAccountCommandHandler(
 
         const int batchSize = 12;
         var nowUtc = DateTime.UtcNow;
+        var totalProcessedPosts = 0;
+        var totalDiscoveredPosts = 0;
+        var totalNewPostsFound = 0;
         var excludedExternalIds = new HashSet<string>(
             account.GetReels().Select(x => x.ExternalId),
             StringComparer.OrdinalIgnoreCase);
 
+        ReportProgress(
+            command.JobId,
+            "Preparing full reel sync",
+            $"Starting inspection for @{account.Handle}",
+            totalProcessedPosts,
+            totalDiscoveredPosts,
+            totalNewPostsFound);
+
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            ReportProgress(
+                command.JobId,
+                "Inspecting batch",
+                $"Fetching next reel batch for @{account.Handle}",
+                totalProcessedPosts,
+                totalDiscoveredPosts,
+                totalNewPostsFound);
 
             var previouslyExcludedExternalIds = excludedExternalIds
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -48,6 +69,9 @@ internal sealed class InspectTrackedAccountCommandHandler(
             account.ApplyInspection(payload, nowUtc);
             await trackedAccountRepository.UpsertAsync(account, cancellationToken);
 
+            totalProcessedPosts += payload.Posts.Count;
+            totalDiscoveredPosts += payload.SeenPostExternalIds.Count;
+
             foreach (var externalId in payload.SeenPostExternalIds)
             {
                 excludedExternalIds.Add(externalId);
@@ -55,12 +79,29 @@ internal sealed class InspectTrackedAccountCommandHandler(
 
             var newlyDiscoveredCandidates = payload.SeenPostExternalIds
                 .Count(externalId => !previouslyExcludedExternalIds.Contains(externalId));
+            totalNewPostsFound += payload.Posts.Count;
+
+            ReportProgress(
+                command.JobId,
+                "Batch processed",
+                $"Processed {payload.Posts.Count} new reels for @{account.Handle}",
+                totalProcessedPosts,
+                totalDiscoveredPosts,
+                totalNewPostsFound);
 
             if (newlyDiscoveredCandidates < batchSize)
             {
                 break;
             }
         }
+
+        ReportProgress(
+            command.JobId,
+            "Finalizing analysis",
+            $"Completing inspection for @{account.Handle}",
+            totalProcessedPosts,
+            totalDiscoveredPosts,
+            totalNewPostsFound);
 
         var strongestPost = account.GetReels()
             .Where(x => x.IsOutlier)
@@ -83,5 +124,27 @@ internal sealed class InspectTrackedAccountCommandHandler(
         }
 
         return account.ToOverviewDto();
+    }
+
+    private void ReportProgress(
+        Guid? jobId,
+        string phase,
+        string currentItem,
+        int processedPosts,
+        int discoveredPosts,
+        int newPostsFound)
+    {
+        if (!jobId.HasValue)
+        {
+            return;
+        }
+
+        inspectionProgressReporter.Report(
+            jobId.Value,
+            phase,
+            currentItem,
+            processedPosts,
+            discoveredPosts,
+            newPostsFound);
     }
 }

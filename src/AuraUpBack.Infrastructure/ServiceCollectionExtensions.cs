@@ -1,5 +1,6 @@
 using AuraUpBack.Domain.Repositories;
 using AuraUpBack.Domain.Services;
+using AuraUpBack.Application.Abstractions;
 using AuraUpBack.Infrastructure.Abstractions;
 using AuraUpBack.Infrastructure.Options;
 using AuraUpBack.Infrastructure.Persistence;
@@ -35,6 +36,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IExplorationRequestRepository, DbExplorationRequestRepository>();
         services.AddSingleton<IAlertSignalRepository, DbAlertSignalRepository>();
         services.AddSingleton<IInspectionJobQueue, InMemoryInspectionJobQueue>();
+        services.AddSingleton<IInspectionProgressReporter, InspectionProgressReporter>();
         services.AddHttpClient();
         services.AddSingleton<IInstagramCredentialVault, InstagramCredentialVault>();
         services.AddSingleton<IInstagramSettingsService, InstagramSettingsService>();
