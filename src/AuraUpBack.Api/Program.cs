@@ -31,6 +31,12 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 
 var builder = WebApplication.CreateBuilder(args);
+var allowedCorsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+    ?.Where(origin => !string.IsNullOrWhiteSpace(origin))
+    .Select(origin => origin.Trim().TrimEnd('/'))
+    .Distinct(StringComparer.OrdinalIgnoreCase)
+    .ToArray()
+    ?? ["https://www.auraup.org", "https://auraup.org"];
 
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration, enableMonitoringService: true);
@@ -42,9 +48,10 @@ builder.Services.AddCors(options =>
     options.AddPolicy("AuraUpFront", policy =>
     {
         policy
-            .AllowAnyOrigin()
+            .WithOrigins(allowedCorsOrigins)
             .AllowAnyHeader()
-            .AllowAnyMethod();
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 
