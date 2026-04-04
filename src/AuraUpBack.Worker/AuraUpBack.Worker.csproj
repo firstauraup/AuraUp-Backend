@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-AuraUpBack.Worker-4c23321a-8680-46c6-87e0-a2c960a16d60</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AuraUpBack.Application\AuraUpBack.Application.csproj" />
+    <ProjectReference Include="..\AuraUpBack.Infrastructure\AuraUpBack.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,12 @@
+.git
+.gitignore
+.idea
+.vs
+**/bin
+**/obj
+**/*.user
+**/*.suo
+**/*.cache
+README.md
+tests
+App_Data/*.json

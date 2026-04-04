@@ -1,0 +1,7 @@
+{
+  "provider": "Rpa",
+  "apifyBaseUrl": "https://api.apify.com/v2",
+  "apifyActorId": "apify~instagram-scraper",
+  "encryptedApifyApiToken": "7u9i0SziNN6vvIc5z5O8GgSLuru0NtqtOU5ojwRXRVdcxPAr8PEm6SaOfpPtvFj/TQemIPGGvbXphH9U4X4A4Q==",
+  "apifyRequestTimeoutSeconds": 180
+}

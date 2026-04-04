@@ -1,0 +1,5 @@
+.DS_Store
+.idea/
+**/bin/
+**/obj/
+**/App_Data/MediaCache/
