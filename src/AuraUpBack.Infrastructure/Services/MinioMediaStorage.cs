@@ -35,34 +35,41 @@ internal sealed class MinioMediaStorage(
             return;
         }
 
-        var account = await trackedAccountRepository.GetByIdAsync(accountId, cancellationToken);
-        if (account is null)
+        try
         {
-            return;
-        }
-
-        var changed = await TryStoreAvatarAsync(account, cancellationToken);
-        var uploadsChanged = 0;
-        var reelPosts = account.Posts.Where(post => post.ShouldBeTreatedAsReel).ToList();
-
-        await Parallel.ForEachAsync(
-            reelPosts,
-            new ParallelOptions
+            var account = await trackedAccountRepository.GetByIdAsync(accountId, cancellationToken);
+            if (account is null)
             {
-                MaxDegreeOfParallelism = Math.Max(1, _options.MaxParallelUploads),
-                CancellationToken = cancellationToken
-            },
-            async (post, token) =>
-            {
-                if (await TryStorePostThumbnailAsync(account, post, token))
+                return;
+            }
+
+            var changed = await TryStoreAvatarAsync(account, cancellationToken);
+            var uploadsChanged = 0;
+            var reelPosts = account.Posts.Where(post => post.ShouldBeTreatedAsReel).ToList();
+
+            await Parallel.ForEachAsync(
+                reelPosts,
+                new ParallelOptions
                 {
-                    Interlocked.Exchange(ref uploadsChanged, 1);
-                }
-            });
+                    MaxDegreeOfParallelism = Math.Max(1, _options.MaxParallelUploads),
+                    CancellationToken = cancellationToken
+                },
+                async (post, token) =>
+                {
+                    if (await TryStorePostThumbnailAsync(account, post, token))
+                    {
+                        Interlocked.Exchange(ref uploadsChanged, 1);
+                    }
+                });
 
-        if (changed || uploadsChanged == 1)
+            if (changed || uploadsChanged == 1)
+            {
+                await trackedAccountRepository.UpsertAsync(account, cancellationToken);
+            }
+        }
+        catch (Exception exception)
         {
-            await trackedAccountRepository.UpsertAsync(account, cancellationToken);
+            logger.LogWarning(exception, "Unable to warm media for account {AccountId}", accountId);
         }
     }
 
@@ -73,20 +80,28 @@ internal sealed class MinioMediaStorage(
             return false;
         }
 
-        var account = await trackedAccountRepository.GetByIdAsync(accountId, cancellationToken);
-        var post = account?.Posts.FirstOrDefault(item => item.Id == postId);
-        if (account is null || post is null)
+        try
         {
+            var account = await trackedAccountRepository.GetByIdAsync(accountId, cancellationToken);
+            var post = account?.Posts.FirstOrDefault(item => item.Id == postId);
+            if (account is null || post is null)
+            {
+                return false;
+            }
+
+            var changed = await TryStorePostThumbnailAsync(account, post, cancellationToken);
+            if (changed)
+            {
+                await trackedAccountRepository.UpsertAsync(account, cancellationToken);
+            }
+
+            return !string.IsNullOrWhiteSpace(post.ThumbnailObjectKey);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Unable to warm thumbnail for account {AccountId} post {PostId}", accountId, postId);
             return false;
         }
-
-        var changed = await TryStorePostThumbnailAsync(account, post, cancellationToken);
-        if (changed)
-        {
-            await trackedAccountRepository.UpsertAsync(account, cancellationToken);
-        }
-
-        return !string.IsNullOrWhiteSpace(post.ThumbnailObjectKey);
     }
 
     public async Task<string> GetSignedAvatarUrlAsync(Guid accountId, string sourceUrl, string objectKey, CancellationToken cancellationToken)
@@ -96,13 +111,21 @@ internal sealed class MinioMediaStorage(
             return sourceUrl;
         }
 
-        var effectiveObjectKey = objectKey;
-        if (string.IsNullOrWhiteSpace(effectiveObjectKey))
+        try
         {
-            effectiveObjectKey = await EnsureAvatarObjectKeyAsync(accountId, cancellationToken);
-        }
+            var effectiveObjectKey = objectKey;
+            if (string.IsNullOrWhiteSpace(effectiveObjectKey))
+            {
+                effectiveObjectKey = await EnsureAvatarObjectKeyAsync(accountId, cancellationToken);
+            }
 
-        return await GetSignedUrlOrFallbackAsync(effectiveObjectKey, sourceUrl, cancellationToken);
+            return await GetSignedUrlOrFallbackAsync(effectiveObjectKey, sourceUrl, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Unable to resolve signed avatar url for account {AccountId}", accountId);
+            return sourceUrl;
+        }
     }
 
     public async Task<string> GetSignedPostThumbnailUrlAsync(
@@ -118,13 +141,21 @@ internal sealed class MinioMediaStorage(
             return sourceUrl;
         }
 
-        var effectiveObjectKey = objectKey;
-        if (string.IsNullOrWhiteSpace(effectiveObjectKey))
+        try
         {
-            effectiveObjectKey = await EnsurePostObjectKeyAsync(accountId, postId, cancellationToken);
-        }
+            var effectiveObjectKey = objectKey;
+            if (string.IsNullOrWhiteSpace(effectiveObjectKey))
+            {
+                effectiveObjectKey = await EnsurePostObjectKeyAsync(accountId, postId, cancellationToken);
+            }
 
-        return await GetSignedUrlOrFallbackAsync(effectiveObjectKey, string.IsNullOrWhiteSpace(sourceUrl) ? reelUrl : sourceUrl, cancellationToken);
+            return await GetSignedUrlOrFallbackAsync(effectiveObjectKey, string.IsNullOrWhiteSpace(sourceUrl) ? reelUrl : sourceUrl, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Unable to resolve signed thumbnail url for account {AccountId} post {PostId}", accountId, postId);
+            return string.IsNullOrWhiteSpace(sourceUrl) ? reelUrl : sourceUrl;
+        }
     }
 
     private async Task<string> EnsureAvatarObjectKeyAsync(Guid accountId, CancellationToken cancellationToken)
@@ -234,18 +265,26 @@ internal sealed class MinioMediaStorage(
             return fallbackUrl;
         }
 
-        var cacheKey = $"media:signed:{objectKey}";
-        var signedUrl = await memoryCache.GetOrCreateAsync(cacheKey, async entry =>
+        try
         {
-            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(Math.Max(1, _options.SignedUrlMinutes - 1));
-            return await _publicClient.PresignedGetObjectAsync(
-                new PresignedGetObjectArgs()
-                    .WithBucket(_options.BucketName)
-                    .WithObject(objectKey)
-                    .WithExpiry((int)TimeSpan.FromMinutes(_options.SignedUrlMinutes).TotalSeconds));
-        });
+            var cacheKey = $"media:signed:{objectKey}";
+            var signedUrl = await memoryCache.GetOrCreateAsync(cacheKey, async entry =>
+            {
+                entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(Math.Max(1, _options.SignedUrlMinutes - 1));
+                return await _publicClient.PresignedGetObjectAsync(
+                    new PresignedGetObjectArgs()
+                        .WithBucket(_options.BucketName)
+                        .WithObject(objectKey)
+                        .WithExpiry((int)TimeSpan.FromMinutes(_options.SignedUrlMinutes).TotalSeconds));
+            });
 
-        return string.IsNullOrWhiteSpace(signedUrl) ? fallbackUrl : signedUrl;
+            return string.IsNullOrWhiteSpace(signedUrl) ? fallbackUrl : signedUrl;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Unable to generate signed url for object {ObjectKey}", objectKey);
+            return fallbackUrl;
+        }
     }
 
     private async Task EnsureBucketExistsAsync(CancellationToken cancellationToken)
