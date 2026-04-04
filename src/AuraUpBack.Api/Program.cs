@@ -364,10 +364,23 @@ app.MapGet("/api/accounts/{accountId:guid}", async (
 
 app.MapGet("/api/accounts/{accountId:guid}/analysis", async (
     Guid accountId,
+    string? sortBy,
+    long? minViews,
+    long? minLikes,
+    long? minComments,
+    long? minShares,
     IQueryDispatcher dispatcher,
     CancellationToken cancellationToken) =>
 {
-    var result = await dispatcher.QueryAsync(new GetTrackedAccountAnalysisQuery(accountId), cancellationToken);
+    var result = await dispatcher.QueryAsync(
+        new GetTrackedAccountAnalysisQuery(
+            accountId,
+            sortBy ?? "performance",
+            minViews,
+            minLikes,
+            minComments,
+            minShares),
+        cancellationToken);
     return Results.Ok(result);
 });
 

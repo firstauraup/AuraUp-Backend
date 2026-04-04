@@ -3,7 +3,13 @@ using AuraUpBack.Domain.Repositories;
 
 namespace AuraUpBack.Application.Queries.GetTrackedAccountAnalysis;
 
-public sealed record GetTrackedAccountAnalysisQuery(Guid AccountId) : Abstractions.IQuery<TrackedAccountAnalysisDto>;
+public sealed record GetTrackedAccountAnalysisQuery(
+    Guid AccountId,
+    string SortBy = "performance",
+    long? MinViews = null,
+    long? MinLikes = null,
+    long? MinComments = null,
+    long? MinShares = null) : Abstractions.IQuery<TrackedAccountAnalysisDto>;
 
 internal sealed class GetTrackedAccountAnalysisQueryHandler(ITrackedAccountRepository trackedAccountRepository)
     : Abstractions.IQueryHandler<GetTrackedAccountAnalysisQuery, TrackedAccountAnalysisDto>
@@ -14,8 +20,12 @@ internal sealed class GetTrackedAccountAnalysisQueryHandler(ITrackedAccountRepos
             ?? throw new InvalidOperationException("Tracked account was not found.");
 
         var orderedPosts = account.GetReels()
-            .OrderByDescending(x => x.PerformanceMultiplier)
-            .ThenByDescending(x => x.Views)
+            .Where(post => !query.MinViews.HasValue || post.Views >= query.MinViews.Value)
+            .Where(post => !query.MinLikes.HasValue || post.Likes >= query.MinLikes.Value)
+            .Where(post => !query.MinComments.HasValue || post.Comments >= query.MinComments.Value)
+            .Where(post => !query.MinShares.HasValue || post.Shares >= query.MinShares.Value)
+            .OrderByDescending(post => ResolveSortValue(post, query.SortBy))
+            .ThenByDescending(post => post.PublishedAtUtc)
             .ToList();
 
         var totalPosts = orderedPosts.Count;
@@ -85,5 +95,18 @@ internal sealed class GetTrackedAccountAnalysisQueryHandler(ITrackedAccountRepos
             orderedPosts.Count(x => x.IsOutlier),
             topVirals,
             topTopics);
+    }
+
+    private static decimal ResolveSortValue(Domain.Entities.TrackedPost post, string sortBy)
+    {
+        return sortBy.Trim().ToLowerInvariant() switch
+        {
+            "views" => post.Views,
+            "likes" => post.Likes,
+            "comments" => post.Comments,
+            "shares" => post.Shares,
+            "published" => post.PublishedAtUtc.Ticks,
+            _ => post.PerformanceMultiplier
+        };
     }
 }
