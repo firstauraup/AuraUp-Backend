@@ -1,11 +1,12 @@
 using AuraUpBack.Api.Realtime;
+using AuraUpBack.Infrastructure.Abstractions;
 using Microsoft.AspNetCore.SignalR;
 
 namespace AuraUpBack.Api.Media;
 
 internal sealed class ThumbnailCacheBackgroundService(
     IThumbnailCacheQueue thumbnailCacheQueue,
-    ThumbnailProxyService thumbnailProxyService,
+    IMediaAssetStorage mediaAssetStorage,
     IHubContext<AdminEventsHub> hubContext,
     ILogger<ThumbnailCacheBackgroundService> logger)
     : BackgroundService
@@ -18,7 +19,7 @@ internal sealed class ThumbnailCacheBackgroundService(
 
             try
             {
-                var cached = await thumbnailProxyService.EnsureThumbnailCachedAsync(request.AccountId, request.PostId, stoppingToken);
+                var cached = await mediaAssetStorage.WarmPostThumbnailAsync(request.AccountId, request.PostId, stoppingToken);
                 if (cached)
                 {
                     await hubContext.Clients.All.SendAsync(

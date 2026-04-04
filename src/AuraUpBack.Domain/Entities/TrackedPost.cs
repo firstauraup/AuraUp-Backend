@@ -10,6 +10,7 @@ public sealed class TrackedPost
     public string Caption { get; set; } = string.Empty;
     public string Url { get; set; } = string.Empty;
     public string ThumbnailUrl { get; set; } = string.Empty;
+    public string ThumbnailObjectKey { get; set; } = string.Empty;
     public DateTime PublishedAtUtc { get; set; }
     public long Views { get; set; }
     public long Likes { get; set; }

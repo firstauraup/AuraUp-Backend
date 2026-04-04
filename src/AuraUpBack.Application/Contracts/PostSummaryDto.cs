@@ -6,6 +6,7 @@ public sealed record PostSummaryDto(
     string Caption,
     string Url,
     string ThumbnailUrl,
+    string ThumbnailObjectKey,
     DateTime PublishedAtUtc,
     long Views,
     long Likes,

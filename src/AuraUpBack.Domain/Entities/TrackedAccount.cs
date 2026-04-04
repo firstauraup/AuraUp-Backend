@@ -11,6 +11,7 @@ public sealed class TrackedAccount
     public string Handle { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
     public string ProfileImageUrl { get; set; } = string.Empty;
+    public string ProfileImageObjectKey { get; set; } = string.Empty;
     public string Bio { get; set; } = string.Empty;
     public long FollowersCount { get; set; }
     public bool MonitoringEnabled { get; set; }

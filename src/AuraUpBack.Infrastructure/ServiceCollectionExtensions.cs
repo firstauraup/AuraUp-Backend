@@ -10,6 +10,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Npgsql;
 
 namespace AuraUpBack.Infrastructure;
@@ -20,6 +21,7 @@ public static class ServiceCollectionExtensions
     {
         services.Configure<AuraUpBackStorageOptions>(configuration.GetSection(AuraUpBackStorageOptions.SectionName));
         services.Configure<InstagramIntegrationOptions>(configuration.GetSection(InstagramIntegrationOptions.SectionName));
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(MinioMediaOptions.FromConfiguration(configuration)));
         services.AddMemoryCache();
 
         services.AddDbContextFactory<AuraUpBackDbContext>((serviceProvider, optionsBuilder) =>
@@ -35,12 +37,15 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IInstagramConnectionRepository, DbInstagramConnectionRepository>();
         services.AddSingleton<IExplorationRequestRepository, DbExplorationRequestRepository>();
         services.AddSingleton<IAlertSignalRepository, DbAlertSignalRepository>();
+        services.AddSingleton<IAppUserRepository, DbAppUserRepository>();
+        services.AddSingleton<IUserInvitationRepository, DbUserInvitationRepository>();
         services.AddSingleton<IInspectionJobQueue, InMemoryInspectionJobQueue>();
         services.AddSingleton<IInspectionProgressReporter, InspectionProgressReporter>();
         services.AddSingleton<InspectionJobRunner>();
         services.AddHttpClient();
         services.AddSingleton<IInstagramCredentialVault, InstagramCredentialVault>();
         services.AddSingleton<IInstagramSettingsService, InstagramSettingsService>();
+        services.AddSingleton<IMediaAssetStorage, MinioMediaStorage>();
         services.AddSingleton<IInstagramConnectionAutomation, InstagramConnectionAutomation>();
         services.AddSingleton<IInstagramExplorerService, InstagramExplorerService>();
         services.AddSingleton<IInstagramInspectionProvider, MockInstagramInspectionProvider>();

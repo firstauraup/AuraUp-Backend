@@ -20,7 +20,8 @@ public sealed class AdminAuthMiddleware(RequestDelegate next)
             return;
         }
 
-        if (context.Request.Path.StartsWithSegments("/api/auth/login", StringComparison.OrdinalIgnoreCase))
+        if (context.Request.Path.StartsWithSegments("/api/auth/login", StringComparison.OrdinalIgnoreCase) ||
+            context.Request.Path.StartsWithSegments("/api/onboarding", StringComparison.OrdinalIgnoreCase))
         {
             await next(context);
             return;
@@ -31,7 +32,7 @@ public sealed class AdminAuthMiddleware(RequestDelegate next)
         if (!TryGetBearerToken(authorizationHeader, out var token) ||
             !sessionService.TryValidateToken(token, out var session))
         {
-            await WriteProblemAsync(context, StatusCodes.Status401Unauthorized, "Unauthorized", "A valid admin session is required.");
+            await WriteProblemAsync(context, StatusCodes.Status401Unauthorized, "Unauthorized", "A valid authenticated session is required.");
             return;
         }
 

@@ -5,6 +5,7 @@ public sealed record TrackedAccountOverviewDto(
     string Handle,
     string DisplayName,
     string ProfileImageUrl,
+    string ProfileImageObjectKey,
     string Bio,
     long FollowersCount,
     bool MonitoringEnabled,

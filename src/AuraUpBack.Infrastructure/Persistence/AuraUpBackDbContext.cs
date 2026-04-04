@@ -15,6 +15,9 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
     public DbSet<ExplorationRequest> ExplorationRequests => Set<ExplorationRequest>();
     public DbSet<AlertSignal> AlertSignals => Set<AlertSignal>();
     public DbSet<InstagramConnection> InstagramConnections => Set<InstagramConnection>();
+    public DbSet<AppUser> AppUsers => Set<AppUser>();
+    public DbSet<UserInvitation> UserInvitations => Set<UserInvitation>();
+    public DbSet<UserAccountAssignment> UserAccountAssignments => Set<UserAccountAssignment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -36,6 +39,7 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
             entity.Property(x => x.Handle).HasMaxLength(120).IsRequired();
             entity.Property(x => x.DisplayName).HasMaxLength(240);
             entity.Property(x => x.ProfileImageUrl).HasMaxLength(1_000);
+            entity.Property(x => x.ProfileImageObjectKey).HasMaxLength(1_000);
             entity.Property(x => x.MonitoringPrompt).HasMaxLength(2_000);
             entity.Property(x => x.LastResearchSummary).HasMaxLength(8_000);
             entity.HasIndex(x => x.Handle).IsUnique();
@@ -53,6 +57,7 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
             entity.Property(x => x.Caption).HasMaxLength(8_000);
             entity.Property(x => x.Url).HasMaxLength(1_000);
             entity.Property(x => x.ThumbnailUrl).HasMaxLength(1_000);
+            entity.Property(x => x.ThumbnailObjectKey).HasMaxLength(1_000);
             entity.Property(x => x.Topic).HasMaxLength(120);
             entity.Property(x => x.ContentAngle).HasMaxLength(240);
             entity.Property(x => x.HookStyle).HasMaxLength(120);
@@ -96,6 +101,42 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
             entity.Property(x => x.VerificationUrl).HasMaxLength(1_000);
             entity.Property(x => x.LastError).HasMaxLength(4_000);
             entity.HasIndex(x => x.UpdatedAtUtc);
+        });
+
+        modelBuilder.Entity<AppUser>(entity =>
+        {
+            entity.ToTable("AppUsers");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Email).HasMaxLength(240).IsRequired();
+            entity.Property(x => x.FirstName).HasMaxLength(120);
+            entity.Property(x => x.LastName).HasMaxLength(120);
+            entity.Property(x => x.PhoneNumber).HasMaxLength(60);
+            entity.Property(x => x.City).HasMaxLength(120);
+            entity.Property(x => x.Country).HasMaxLength(120);
+            entity.Property(x => x.CompanyName).HasMaxLength(180);
+            entity.Property(x => x.PasswordHash).HasMaxLength(1_000);
+            entity.HasIndex(x => x.Email).IsUnique();
+            entity.HasMany(x => x.AssignedAccounts)
+                .WithOne()
+                .HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<UserInvitation>(entity =>
+        {
+            entity.ToTable("UserInvitations");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Email).HasMaxLength(240).IsRequired();
+            entity.Property(x => x.TokenHash).HasMaxLength(256).IsRequired();
+            entity.HasIndex(x => x.TokenHash).IsUnique();
+            entity.HasIndex(x => new { x.Email, x.AcceptedAtUtc, x.ExpiresAtUtc });
+        });
+
+        modelBuilder.Entity<UserAccountAssignment>(entity =>
+        {
+            entity.ToTable("UserAccountAssignments");
+            entity.HasKey(x => new { x.UserId, x.AccountId });
+            entity.HasIndex(x => x.AccountId);
         });
     }
 }

@@ -9,6 +9,7 @@ namespace AuraUpBack.Infrastructure.Services;
 public sealed class InspectionJobRunner(
     IInspectionJobQueue inspectionJobQueue,
     ICommandDispatcher commandDispatcher,
+    IMediaAssetStorage mediaAssetStorage,
     ILogger<InspectionJobRunner> logger)
 {
     private readonly SemaphoreSlim _slots = new(2, 2);
@@ -41,6 +42,7 @@ public sealed class InspectionJobRunner(
                 inspectionJobQueue.MarkRunning(job.JobId);
                 await commandDispatcher.SendAsync(new InspectTrackedAccountCommand(job.AccountId, job.JobId), CancellationToken.None);
                 inspectionJobQueue.MarkCompleted(job.JobId);
+                _ = WarmMediaAsync(job.AccountId);
                 logger.LogInformation("Inspection job {JobId} completed for account {AccountId}", job.JobId, job.AccountId);
             }
             catch (Exception exception)
@@ -56,6 +58,18 @@ public sealed class InspectionJobRunner(
         finally
         {
             _scheduledJobs.TryRemove(jobId, out _);
+        }
+    }
+
+    private async Task WarmMediaAsync(Guid accountId)
+    {
+        try
+        {
+            await mediaAssetStorage.WarmAccountMediaAsync(accountId, CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Media warmup failed for account {AccountId}", accountId);
         }
     }
 }
