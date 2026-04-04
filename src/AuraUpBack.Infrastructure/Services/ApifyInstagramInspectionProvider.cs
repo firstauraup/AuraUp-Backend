@@ -237,12 +237,25 @@ internal sealed class ApifyInstagramInspectionProvider(
         CancellationToken cancellationToken)
     {
         var posts = new List<InspectedPostPayload>(items.Count);
-
-        foreach (var item in items)
+        var gate = new SemaphoreSlim(Math.Max(1, _options.ApifyMaxConcurrentThumbnailResolutions));
+        var tasks = items.Select(async item =>
         {
             cancellationToken.ThrowIfCancellationRequested();
+            await gate.WaitAsync(cancellationToken);
 
-            var post = await MapPostAsync(item, cancellationToken);
+            try
+            {
+                return await MapPostAsync(item, cancellationToken);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+
+        var results = await Task.WhenAll(tasks);
+        foreach (var post in results)
+        {
             if (post is not null)
             {
                 posts.Add(post);
@@ -325,7 +338,7 @@ internal sealed class ApifyInstagramInspectionProvider(
         try
         {
             using var client = httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(20);
+            client.Timeout = TimeSpan.FromSeconds(Math.Max(2, _options.ApifyThumbnailResolveTimeoutSeconds));
             client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36");
             client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
             client.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");

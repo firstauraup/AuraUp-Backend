@@ -11,6 +11,7 @@ internal sealed class DbAlertSignalRepository(IDbContextFactory<AuraUpBackDbCont
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await dbContext.AlertSignals
+            .AsNoTracking()
             .OrderByDescending(x => x.CreatedAtUtc)
             .Take(Math.Max(1, take))
             .ToListAsync(cancellationToken);

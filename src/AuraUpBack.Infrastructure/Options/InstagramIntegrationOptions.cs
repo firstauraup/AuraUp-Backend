@@ -10,6 +10,8 @@ public sealed class InstagramIntegrationOptions
     public string ApifyActorId { get; set; } = "apify~instagram-scraper";
     public string ApifyApiToken { get; set; } = string.Empty;
     public int ApifyRequestTimeoutSeconds { get; set; } = 180;
+    public int ApifyThumbnailResolveTimeoutSeconds { get; set; } = 6;
+    public int ApifyMaxConcurrentThumbnailResolutions { get; set; } = 4;
 
     public string RpaSessionStatePath { get; set; } = "App_Data/instagram-rpa-session.json";
 
@@ -26,4 +28,9 @@ public sealed class InstagramIntegrationOptions
     public bool PreferStoredSession { get; set; } = true;
 
     public bool AllowPublicProfileReadWithoutSession { get; set; } = true;
+    public int ExplorerSearchCacheMinutes { get; set; } = 10;
+    public int ExplorerPreviewCacheMinutes { get; set; } = 15;
+    public int ExplorerMaxConcurrentSearches { get; set; } = 2;
+    public int ExplorerMaxConcurrentReelLoads { get; set; } = 4;
+    public int ExplorerNavigationTimeoutSeconds { get; set; } = 20;
 }

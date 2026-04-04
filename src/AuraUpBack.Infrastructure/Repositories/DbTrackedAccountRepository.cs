@@ -11,6 +11,7 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await dbContext.TrackedAccounts
+            .AsNoTracking()
             .Include(x => x.Posts)
             .OrderBy(x => x.Handle)
             .ToListAsync(cancellationToken);
@@ -20,6 +21,7 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await dbContext.TrackedAccounts
+            .AsNoTracking()
             .Include(x => x.Posts)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
     }
@@ -30,6 +32,7 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
 
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await dbContext.TrackedAccounts
+            .AsNoTracking()
             .Include(x => x.Posts)
             .FirstOrDefaultAsync(x => x.Handle == normalized, cancellationToken);
     }

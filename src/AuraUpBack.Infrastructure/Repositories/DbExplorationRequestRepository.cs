@@ -11,6 +11,7 @@ internal sealed class DbExplorationRequestRepository(IDbContextFactory<AuraUpBac
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await dbContext.ExplorationRequests
+            .AsNoTracking()
             .OrderByDescending(x => x.CreatedAtUtc)
             .ToListAsync(cancellationToken);
     }
@@ -18,7 +19,9 @@ internal sealed class DbExplorationRequestRepository(IDbContextFactory<AuraUpBac
     public async Task<ExplorationRequest?> GetByIdAsync(Guid id, CancellationToken cancellationToken)
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await dbContext.ExplorationRequests.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+        return await dbContext.ExplorationRequests
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
     }
 
     public async Task UpsertAsync(ExplorationRequest request, CancellationToken cancellationToken)

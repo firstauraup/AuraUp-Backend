@@ -22,8 +22,8 @@ internal sealed partial class InstagramExplorerService(
 {
     private static readonly HttpClient SnapshotHttpClient = CreateSnapshotHttpClient();
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> SearchLocks = new(StringComparer.Ordinal);
-    private static readonly TimeSpan SearchCacheDuration = TimeSpan.FromMinutes(5);
     private readonly InstagramIntegrationOptions _options = options.Value;
+    private readonly SemaphoreSlim _searchSlots = new(Math.Max(1, options.Value.ExplorerMaxConcurrentSearches));
 
     public async Task<ExplorerSearchResult> SearchReelsAsync(
         string query,
@@ -81,6 +81,13 @@ internal sealed partial class InstagramExplorerService(
             throw new InvalidOperationException("The account handle is required.");
         }
 
+        var cacheKey = $"explorer-preview:{normalizedHandle}";
+        if (memoryCache.TryGetValue<ExplorerAccountPreview>(cacheKey, out var cachedPreview) &&
+            cachedPreview is not null)
+        {
+            return cachedPreview;
+        }
+
         var url = $"https://www.instagram.com/{normalizedHandle}/";
         using var response = await SnapshotHttpClient.GetAsync(url, cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -92,12 +99,19 @@ internal sealed partial class InstagramExplorerService(
         var description = ExtractMetaContent(rawHtml, "og:description");
         var title = ExtractMetaContent(rawHtml, "og:title", ExtractHtmlTitle(rawHtml));
 
-        return new ExplorerAccountPreview(
+        var preview = new ExplorerAccountPreview(
             normalizedHandle,
             ExtractDisplayName(title, normalizedHandle),
             ExtractMetaContent(rawHtml, "og:image"),
             ExtractBio(description, normalizedHandle),
             TryParseFollowerCount(description));
+
+        memoryCache.Set(
+            cacheKey,
+            preview,
+            TimeSpan.FromMinutes(Math.Max(1, _options.ExplorerPreviewCacheMinutes)));
+
+        return preview;
     }
 
     private async Task<ExplorerSessionContext> ResolveExplorerSessionAsync(CancellationToken cancellationToken)
@@ -146,10 +160,10 @@ internal sealed partial class InstagramExplorerService(
             await page.GotoAsync(reelUrl, new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.DOMContentLoaded,
-                Timeout = 60_000
+                Timeout = Math.Max(5, _options.ExplorerNavigationTimeoutSeconds) * 1_000
             });
 
-            await page.WaitForTimeoutAsync(1_500);
+            await page.WaitForTimeoutAsync(750);
             cancellationToken.ThrowIfCancellationRequested();
 
             var snapshot = await page.EvaluateAsync<ExplorerSnapshot>(
@@ -249,7 +263,10 @@ internal sealed partial class InstagramExplorerService(
                 targetResults,
                 cancellationToken);
 
-            memoryCache.Set(cacheKey, rebuiltSearch, SearchCacheDuration);
+            memoryCache.Set(
+                cacheKey,
+                rebuiltSearch,
+                TimeSpan.FromMinutes(Math.Max(1, _options.ExplorerSearchCacheMinutes)));
             return rebuiltSearch;
         }
         finally
@@ -268,6 +285,10 @@ internal sealed partial class InstagramExplorerService(
         int targetResults,
         CancellationToken cancellationToken)
     {
+        await _searchSlots.WaitAsync(cancellationToken);
+
+        try
+        {
         var session = await ResolveExplorerSessionAsync(cancellationToken);
 
         using var playwright = await Playwright.CreateAsync();
@@ -291,10 +312,10 @@ internal sealed partial class InstagramExplorerService(
         await pageInstance.GotoAsync(searchUrl, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
-            Timeout = 60_000
+            Timeout = Math.Max(5, _options.ExplorerNavigationTimeoutSeconds) * 1_000
         });
 
-        await pageInstance.WaitForTimeoutAsync(2_500);
+        await pageInstance.WaitForTimeoutAsync(1_250);
 
         var discoveredUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var maxCandidates = Math.Max(targetResults * 3, 80);
@@ -316,27 +337,32 @@ internal sealed partial class InstagramExplorerService(
                 }
                 """);
             await pageInstance.Mouse.WheelAsync(0, 2400);
-            await pageInstance.WaitForTimeoutAsync(1_200);
+            await pageInstance.WaitForTimeoutAsync(600);
         }
 
-        var reels = new List<ExplorerReel>();
-        foreach (var url in discoveredUrls)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            try
+        var reels = new ConcurrentBag<ExplorerReel>();
+        await Parallel.ForEachAsync(
+            discoveredUrls,
+            new ParallelOptions
             {
-                var reel = await ReadReelAsync(context, url, cancellationToken);
-                if (reel is not null)
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = Math.Max(1, _options.ExplorerMaxConcurrentReelLoads)
+            },
+            async (url, token) =>
+            {
+                try
                 {
-                    reels.Add(reel);
+                    var reel = await ReadReelAsync(context, url, token);
+                    if (reel is not null)
+                    {
+                        reels.Add(reel);
+                    }
                 }
-            }
-            catch (Exception exception)
-            {
-                logger.LogWarning(exception, "Explorer could not read reel {Url}", url);
-            }
-        }
+                catch (Exception exception)
+                {
+                    logger.LogWarning(exception, "Explorer could not read reel {Url}", url);
+                }
+            });
 
         var filtered = reels
             .Where(x => !minViews.HasValue || x.Views >= minViews.Value)
@@ -351,6 +377,11 @@ internal sealed partial class InstagramExplorerService(
             filtered,
             Math.Max(targetResults, filtered.Count),
             discoveredUrls.Count >= maxCandidates);
+        }
+        finally
+        {
+            _searchSlots.Release();
+        }
     }
 
     private static string BuildCacheKey(

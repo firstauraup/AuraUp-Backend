@@ -11,6 +11,7 @@ internal sealed class DbInstagramConnectionRepository(IDbContextFactory<AuraUpBa
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await dbContext.InstagramConnections
+            .AsNoTracking()
             .OrderByDescending(x => x.UpdatedAtUtc)
             .FirstOrDefaultAsync(cancellationToken);
     }
