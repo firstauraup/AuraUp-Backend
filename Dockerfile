@@ -9,7 +9,7 @@ COPY src/AuraUpBack.Api/AuraUpBack.Api.csproj src/AuraUpBack.Api/
 COPY src/AuraUpBack.Worker/AuraUpBack.Worker.csproj src/AuraUpBack.Worker/
 COPY src/AuraUpBack.RpaSessionTool/AuraUpBack.RpaSessionTool.csproj src/AuraUpBack.RpaSessionTool/
 
-RUN dotnet restore AuraUpBack.sln
+RUN dotnet restore AuraUpBack.sln -r linux-x64
 
 COPY src/ ./src/
 
