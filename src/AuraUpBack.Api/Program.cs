@@ -56,6 +56,7 @@ builder.Services.AddCors(options =>
 });
 
 var mediaCacheRoot = Path.Combine(builder.Environment.ContentRootPath, "App_Data", "MediaCache");
+var thumbnailCaptureGate = new SemaphoreSlim(1, 1);
 
 var app = builder.Build();
 var inspectionJobQueue = app.Services.GetRequiredService<IInspectionJobQueue>();
@@ -135,7 +136,7 @@ app.MapGet("/media/accounts/{accountId:guid}/posts/{postId:guid}/thumbnail", asy
         return Results.NotFound();
     }
 
-    var screenshotBytes = await TryCaptureThumbnailFromReelAsync(post.Url, cancellationToken);
+    var screenshotBytes = await TryCaptureThumbnailFromReelAsync(post.Url, thumbnailCaptureGate, cancellationToken);
     if (screenshotBytes.Length == 0)
     {
         return Results.NotFound();
@@ -812,15 +813,25 @@ static Task BroadcastMediaReadyAsync(
         cancellationToken);
 }
 
-static async Task<byte[]> TryCaptureThumbnailFromReelAsync(string reelUrl, CancellationToken cancellationToken)
+static async Task<byte[]> TryCaptureThumbnailFromReelAsync(
+    string reelUrl,
+    SemaphoreSlim captureGate,
+    CancellationToken cancellationToken)
 {
     if (string.IsNullOrWhiteSpace(reelUrl))
     {
         return [];
     }
 
+    var acquired = false;
     try
     {
+        acquired = await captureGate.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken);
+        if (!acquired)
+        {
+            return [];
+        }
+
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
@@ -844,10 +855,10 @@ static async Task<byte[]> TryCaptureThumbnailFromReelAsync(string reelUrl, Cance
         await page.GotoAsync(reelUrl, new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded,
-            Timeout = 30000
+            Timeout = 8000
         });
 
-        await page.WaitForTimeoutAsync(1500);
+        await page.WaitForTimeoutAsync(1000);
 
         var media = page.Locator("article img, article video, main img, main video").First;
         if (await media.CountAsync() > 0)
@@ -869,6 +880,13 @@ static async Task<byte[]> TryCaptureThumbnailFromReelAsync(string reelUrl, Cance
     catch
     {
         return [];
+    }
+    finally
+    {
+        if (acquired)
+        {
+            captureGate.Release();
+        }
     }
 }
 
