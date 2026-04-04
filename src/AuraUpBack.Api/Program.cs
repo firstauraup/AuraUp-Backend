@@ -56,6 +56,8 @@ builder.Services.AddCors(options =>
 });
 
 var mediaCacheRoot = Path.Combine(builder.Environment.ContentRootPath, "App_Data", "MediaCache");
+var enableThumbnailCaptureFallback = builder.Configuration.GetValue<bool?>("Media:EnableThumbnailCaptureFallback")
+    ?? builder.Environment.IsDevelopment();
 var thumbnailCaptureGate = new SemaphoreSlim(1, 1);
 
 var app = builder.Build();
@@ -132,6 +134,11 @@ app.MapGet("/media/accounts/{accountId:guid}/posts/{postId:guid}/thumbnail", asy
     }
 
     if (string.IsNullOrWhiteSpace(post.Url))
+    {
+        return Results.NotFound();
+    }
+
+    if (!enableThumbnailCaptureFallback)
     {
         return Results.NotFound();
     }
@@ -602,7 +609,7 @@ static async Task<string> TryResolveThumbnailFromReelAsync(
     try
     {
         using var client = httpClientFactory.CreateClient();
-        client.Timeout = TimeSpan.FromSeconds(20);
+        client.Timeout = TimeSpan.FromSeconds(6);
         client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36");
         client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
         client.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
@@ -656,7 +663,7 @@ static async Task<DownloadedImage?> TryDownloadImageAsync(
     try
     {
         using var client = httpClientFactory.CreateClient();
-        client.Timeout = TimeSpan.FromSeconds(20);
+        client.Timeout = TimeSpan.FromSeconds(6);
         client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36");
         client.DefaultRequestHeaders.TryAddWithoutValidation("Referer", "https://www.instagram.com/");
 
