@@ -119,12 +119,50 @@ internal sealed class InstagramBrowserProfileService(IOptions<InstagramIntegrati
         try
         {
             var playwright = await Playwright.CreateAsync();
-            var context = await playwright.Chromium.LaunchPersistentContextAsync(
+            if (headless)
+            {
+                var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+                {
+                    Headless = true,
+                    ChromiumSandbox = false,
+                    Args =
+                    [
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-background-networking",
+                        "--disable-background-timer-throttling",
+                        "--disable-renderer-backgrounding",
+                        "--disable-backgrounding-occluded-windows"
+                    ]
+                });
+
+                var contextOptions = new BrowserNewContextOptions
+                {
+                    ViewportSize = new ViewportSize
+                    {
+                        Width = 1440,
+                        Height = 980
+                    },
+                    Locale = "en-US",
+                    TimezoneId = "America/New_York"
+                };
+
+                if (File.Exists(SessionStatePath))
+                {
+                    contextOptions.StorageStatePath = SessionStatePath;
+                }
+
+                var context = await browser.NewContextAsync(contextOptions);
+                return new PersistentBrowserLease(_gate, playwright, browser, context);
+            }
+
+            var persistentContext = await playwright.Chromium.LaunchPersistentContextAsync(
                 ResolveUserDataDirPath(),
                 new BrowserTypeLaunchPersistentContextOptions
                 {
-                    Headless = headless,
-                    SlowMo = headless ? 0 : 75,
+                    Headless = false,
+                    SlowMo = 75,
                     ChromiumSandbox = false,
                     ViewportSize = new ViewportSize
                     {
@@ -143,7 +181,7 @@ internal sealed class InstagramBrowserProfileService(IOptions<InstagramIntegrati
                     ]
                 });
 
-            return new PersistentBrowserLease(_gate, playwright, context);
+            return new PersistentBrowserLease(_gate, playwright, null, persistentContext);
         }
         catch
         {
@@ -240,6 +278,7 @@ internal sealed class InstagramBrowserProfileService(IOptions<InstagramIntegrati
     internal sealed class PersistentBrowserLease(
         SemaphoreSlim gate,
         IPlaywright playwright,
+        IBrowser? browser,
         IBrowserContext context)
         : IAsyncDisposable
     {
@@ -250,6 +289,10 @@ internal sealed class InstagramBrowserProfileService(IOptions<InstagramIntegrati
             try
             {
                 await Context.CloseAsync().ConfigureAwait(false);
+                if (browser is not null)
+                {
+                    await browser.CloseAsync().ConfigureAwait(false);
+                }
             }
             finally
             {
