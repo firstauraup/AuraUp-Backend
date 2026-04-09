@@ -114,7 +114,7 @@ internal sealed class InstagramBrowserProfileService(IOptions<InstagramIntegrati
 
     public async Task<PersistentBrowserLease> AcquireAsync(bool headless, CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken);
+        var gateAcquired = false;
 
         try
         {
@@ -154,8 +154,11 @@ internal sealed class InstagramBrowserProfileService(IOptions<InstagramIntegrati
                 }
 
                 var context = await browser.NewContextAsync(contextOptions);
-                return new PersistentBrowserLease(_gate, playwright, browser, context);
+                return new PersistentBrowserLease(null, playwright, browser, context);
             }
+
+            await _gate.WaitAsync(cancellationToken);
+            gateAcquired = true;
 
             var persistentContext = await playwright.Chromium.LaunchPersistentContextAsync(
                 ResolveUserDataDirPath(),
@@ -185,7 +188,11 @@ internal sealed class InstagramBrowserProfileService(IOptions<InstagramIntegrati
         }
         catch
         {
-            _gate.Release();
+            if (gateAcquired)
+            {
+                _gate.Release();
+            }
+
             throw;
         }
     }
@@ -276,7 +283,7 @@ internal sealed class InstagramBrowserProfileService(IOptions<InstagramIntegrati
     }
 
     internal sealed class PersistentBrowserLease(
-        SemaphoreSlim gate,
+        SemaphoreSlim? gate,
         IPlaywright playwright,
         IBrowser? browser,
         IBrowserContext context)
@@ -297,7 +304,7 @@ internal sealed class InstagramBrowserProfileService(IOptions<InstagramIntegrati
             finally
             {
                 playwright.Dispose();
-                gate.Release();
+                gate?.Release();
             }
         }
     }
