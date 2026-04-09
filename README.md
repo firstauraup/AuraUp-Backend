@@ -631,6 +631,22 @@ Para produccion o pruebas serias:
 - monta un volumen persistente en `/app/App_Data`
 - o cambia luego la persistencia de JSON a PostgreSQL
 
+### Resumen real para Railway
+
+Lo que si va en git:
+
+- `Dockerfile`
+- `railway.json`
+- el codigo del backend que guarda y reutiliza `instagram-rpa-session.json`
+
+Lo que no se resuelve con git:
+
+- crear el volumen persistente en Railway
+- montarlo exactamente en `/app/App_Data`
+- subir al volumen el archivo `instagram-rpa-session.json` si la sesion se genero fuera de Railway
+
+Sin ese volumen, Railway redeploya o reinicia el contenedor y la sesion se pierde aunque el repo este correcto.
+
 ## Login admin
 
 ```http

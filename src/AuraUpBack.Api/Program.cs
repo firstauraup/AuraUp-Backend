@@ -2,12 +2,14 @@ using AuraUpBack.Application;
 using AuraUpBack.Application.Abstractions;
 using AuraUpBack.Application.Commands.CreateExplorationRequest;
 using AuraUpBack.Application.Commands.ConnectInstagramIntegration;
+using AuraUpBack.Application.Commands.CompleteInstagramManualLogin;
 using AuraUpBack.Application.Commands.BackfillTrackedAccountHistory;
 using AuraUpBack.Application.Commands.DeleteTrackedAccount;
 using AuraUpBack.Application.Commands.InspectTrackedAccount;
 using AuraUpBack.Application.Commands.RegisterTrackedAccount;
 using AuraUpBack.Application.Commands.ReconnectInstagramIntegration;
 using AuraUpBack.Application.Commands.RunExplorationRequest;
+using AuraUpBack.Application.Commands.StartInstagramManualLogin;
 using AuraUpBack.Application.Commands.TranscribeTrackedPost;
 using AuraUpBack.Application.Commands.UpdateTrackedAccountMonitoring;
 using AuraUpBack.Application.Commands.VerifyInstagramIntegrationCode;
@@ -36,7 +38,13 @@ var allowedCorsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins")
     .Select(origin => origin.Trim().TrimEnd('/'))
     .Distinct(StringComparer.OrdinalIgnoreCase)
     .ToArray()
-    ?? ["https://www.auraup.org", "https://auraup.org"];
+    ?? [
+        "https://www.auraup.org", 
+        "https://auraup.org",
+        "http://localhost:5173",
+        "https://localhost:5173",
+        "http://localhost:5000",
+        "https://localhost:5000"];
 
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration, enableMonitoringService: true);
@@ -330,6 +338,72 @@ app.MapPost("/api/integrations/instagram/reconnect", async (
     try
     {
         var result = await dispatcher.SendAsync(new ReconnectInstagramIntegrationCommand(), cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { message = exception.Message });
+    }
+    catch (TimeoutException exception)
+    {
+        return Results.Json(
+            new { message = exception.Message },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    catch (PlaywrightException exception)
+    {
+        return Results.Json(
+            new { message = exception.Message },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+app.MapPost("/api/integrations/instagram/manual/start", async (
+    HttpContext httpContext,
+    ICommandDispatcher dispatcher,
+    CancellationToken cancellationToken) =>
+{
+    if (!httpContext.RequireSession().IsAdministrator())
+    {
+        return AuthorizationExtensions.ForbidAction("Only administrators can manage Instagram integration.");
+    }
+
+    try
+    {
+        var result = await dispatcher.SendAsync(new StartInstagramManualLoginCommand(), cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { message = exception.Message });
+    }
+    catch (TimeoutException exception)
+    {
+        return Results.Json(
+            new { message = exception.Message },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    catch (PlaywrightException exception)
+    {
+        return Results.Json(
+            new { message = exception.Message },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+app.MapPost("/api/integrations/instagram/manual/complete", async (
+    HttpContext httpContext,
+    ICommandDispatcher dispatcher,
+    CancellationToken cancellationToken) =>
+{
+    if (!httpContext.RequireSession().IsAdministrator())
+    {
+        return AuthorizationExtensions.ForbidAction("Only administrators can manage Instagram integration.");
+    }
+
+    try
+    {
+        var result = await dispatcher.SendAsync(new CompleteInstagramManualLoginCommand(), cancellationToken);
         return Results.Ok(result);
     }
     catch (InvalidOperationException exception)

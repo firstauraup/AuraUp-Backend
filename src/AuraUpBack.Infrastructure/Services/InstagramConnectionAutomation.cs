@@ -20,6 +20,8 @@ internal sealed class InstagramConnectionAutomation(
     : IInstagramConnectionAutomation
 {
     private readonly InstagramIntegrationOptions _options = options.Value;
+    private readonly SemaphoreSlim _manualLoginGate = new(1, 1);
+    private ManualLoginSession? _manualLoginSession;
 
     public async Task<InstagramConnectionState> ConnectAsync(string username, string password, CancellationToken cancellationToken)
     {
@@ -37,6 +39,11 @@ internal sealed class InstagramConnectionAutomation(
         connection.UpdateCredentials(username, encryptedPassword, sessionStatePath, nowUtc);
         await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
 
+        if (!_options.RpaHeadless)
+        {
+            return await StartOrResumeManualLoginAsync(connection, password.Trim(), cancellationToken);
+        }
+
         return await LoginAsync(connection, password.Trim(), cancellationToken);
     }
 
@@ -51,7 +58,35 @@ internal sealed class InstagramConnectionAutomation(
         }
 
         var password = credentialVault.Decrypt(connection.EncryptedPassword);
+
+        if (!_options.RpaHeadless)
+        {
+            return await StartOrResumeManualLoginAsync(connection, password, cancellationToken);
+        }
+
         return await LoginAsync(connection, password, cancellationToken);
+    }
+
+    public async Task<InstagramConnectionState> StartManualLoginAsync(CancellationToken cancellationToken)
+    {
+        var connection = await instagramConnectionRepository.GetActiveAsync(cancellationToken)
+            ?? throw new InvalidOperationException("No Instagram connection has been configured yet.");
+
+        if (!connection.HasStoredCredentials)
+        {
+            throw new InvalidOperationException("The Instagram connection does not have stored credentials.");
+        }
+
+        var password = credentialVault.Decrypt(connection.EncryptedPassword);
+        return await StartOrResumeManualLoginAsync(connection, password, cancellationToken);
+    }
+
+    public async Task<InstagramConnectionState> CompleteManualLoginAsync(CancellationToken cancellationToken)
+    {
+        var connection = await instagramConnectionRepository.GetActiveAsync(cancellationToken)
+            ?? throw new InvalidOperationException("No Instagram connection has been configured yet.");
+
+        return await TryCompleteManualLoginAsync(connection, cancellationToken);
     }
 
     public async Task<InstagramConnectionState> VerifyCodeAsync(string code, CancellationToken cancellationToken)
@@ -109,6 +144,15 @@ internal sealed class InstagramConnectionAutomation(
             return ToState(connection);
         }
 
+        if (!_options.RpaHeadless)
+        {
+            connection.MarkReconnectRequired(
+                "Saved Instagram session expired. Start or complete the manual login flow from the admin to refresh it.",
+                DateTime.UtcNow);
+            await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
+            return ToState(connection);
+        }
+
         var password = credentialVault.Decrypt(connection.EncryptedPassword);
 
         try
@@ -132,6 +176,202 @@ internal sealed class InstagramConnectionAutomation(
     {
         var connection = await instagramConnectionRepository.GetActiveAsync(cancellationToken);
         return connection is null ? CreateDisconnectedState() : ToState(connection);
+    }
+
+    private async Task<InstagramConnectionState> StartOrResumeManualLoginAsync(
+        InstagramConnection connection,
+        string password,
+        CancellationToken cancellationToken)
+    {
+        await _manualLoginGate.WaitAsync(cancellationToken);
+
+        try
+        {
+            if (HasReusableManualLoginSession(connection.Id))
+            {
+                if (await TryCompleteManualLoginCoreAsync(connection, cancellationToken, completeIfAuthenticated: true))
+                {
+                    return ToState(connection);
+                }
+
+                await _manualLoginSession!.Page.BringToFrontAsync();
+                connection.MarkVerificationRequired(
+                    "Finish the Instagram login in the opened Chromium window, then click Complete manual login.",
+                    _manualLoginSession.Page.Url,
+                    DateTime.UtcNow);
+                await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
+                return ToState(connection);
+            }
+
+            await DisposeManualLoginSessionAsync();
+
+            var playwright = await Playwright.CreateAsync();
+            var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+            {
+                Headless = false,
+                SlowMo = 75
+            });
+
+            var contextOptions = new BrowserNewContextOptions
+            {
+                ViewportSize = new ViewportSize
+                {
+                    Width = 1440,
+                    Height = 980
+                }
+            };
+
+            var sessionStatePath = ResolveSessionStatePath(connection);
+            var context = await browser.NewContextAsync(contextOptions);
+            var page = await context.NewPageAsync();
+            _manualLoginSession = new ManualLoginSession(connection.Id, playwright, browser, context, page);
+
+            var targetUrl = ResolveManualLoginTargetUrl();
+            await OpenManualLoginPageAsync(page, targetUrl);
+
+            await DismissCookiePromptAsync(page);
+            await TryPrefillLoginFormAsync(page, connection.Username, password);
+
+            if (await TryCompleteManualLoginCoreAsync(connection, cancellationToken, completeIfAuthenticated: true))
+            {
+                return ToState(connection);
+            }
+
+            connection.MarkVerificationRequired(
+                "Manual Instagram login started. Finish the challenge in the opened Chromium window, then click Complete manual login.",
+                page.Url,
+                DateTime.UtcNow);
+            await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
+            return ToState(connection);
+        }
+        catch
+        {
+            await DisposeManualLoginSessionAsync();
+            throw;
+        }
+        finally
+        {
+            _manualLoginGate.Release();
+        }
+    }
+
+    private async Task<InstagramConnectionState> TryCompleteManualLoginAsync(
+        InstagramConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await _manualLoginGate.WaitAsync(cancellationToken);
+
+        try
+        {
+            if (await TryCompleteManualLoginCoreAsync(connection, cancellationToken, completeIfAuthenticated: true))
+            {
+                return ToState(connection);
+            }
+
+            if (_manualLoginSession is null || _manualLoginSession.ConnectionId != connection.Id)
+            {
+                throw new InvalidOperationException("No manual Instagram login window is active. Start the manual login first.");
+            }
+
+            connection.MarkVerificationRequired(
+                "Instagram still needs manual action. Finish the challenge in the opened Chromium window, then click Complete manual login again.",
+                SafeGetPageUrl(_manualLoginSession.Page, connection.VerificationUrl),
+                DateTime.UtcNow);
+            await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
+            return ToState(connection);
+        }
+        finally
+        {
+            _manualLoginGate.Release();
+        }
+    }
+
+    private async Task<bool> TryCompleteManualLoginCoreAsync(
+        InstagramConnection connection,
+        CancellationToken cancellationToken,
+        bool completeIfAuthenticated)
+    {
+        var session = _manualLoginSession;
+        if (session is null || session.ConnectionId != connection.Id)
+        {
+            return false;
+        }
+
+        if (!session.Browser.IsConnected || session.Page.IsClosed)
+        {
+            await DisposeManualLoginSessionAsync();
+            return false;
+        }
+
+        var page = session.Page;
+        await page.BringToFrontAsync();
+
+        var outcome = await ResolveLoginOutcomeAsync(page, cancellationToken);
+        if (outcome == InstagramLoginOutcome.Unknown)
+        {
+            await page.GotoAsync("https://www.instagram.com/", new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.DOMContentLoaded,
+                Timeout = Math.Max(60, _options.LoginTimeoutSeconds) * 1_000
+            });
+
+            await page.WaitForTimeoutAsync(2_000);
+            outcome = await ResolveLoginOutcomeAsync(page, cancellationToken);
+        }
+
+        if (outcome == InstagramLoginOutcome.Authenticated && completeIfAuthenticated)
+        {
+            await EnsureAuthenticatedSessionAsync(page, cancellationToken);
+
+            Directory.CreateDirectory(Path.GetDirectoryName(connection.SessionStatePath) ?? AppContext.BaseDirectory);
+            await session.Context.StorageStateAsync(new BrowserContextStorageStateOptions
+            {
+                Path = connection.SessionStatePath
+            });
+
+            connection.MarkConnected(DateTime.UtcNow);
+            await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
+            await DisposeManualLoginSessionAsync();
+            logger.LogInformation("Instagram manual session completed for @{Username}", connection.Username);
+            return true;
+        }
+
+        if (outcome == InstagramLoginOutcome.InvalidCredentials)
+        {
+            connection.MarkFailed("Instagram rejected the current credentials during manual login.", DateTime.UtcNow);
+            await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
+            await DisposeManualLoginSessionAsync();
+            throw new InvalidOperationException("Instagram rejected the current credentials during manual login.");
+        }
+
+        connection.MarkVerificationRequired(
+            "Instagram still needs manual action in the opened Chromium window.",
+            SafeGetPageUrl(page, connection.VerificationUrl),
+            DateTime.UtcNow);
+        await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
+        return false;
+    }
+
+    private bool HasReusableManualLoginSession(Guid connectionId)
+    {
+        var session = _manualLoginSession;
+        if (session is null || session.ConnectionId != connectionId)
+        {
+            return false;
+        }
+
+        return session.Browser.IsConnected && !session.Page.IsClosed;
+    }
+
+    private async Task DisposeManualLoginSessionAsync()
+    {
+        if (_manualLoginSession is null)
+        {
+            return;
+        }
+
+        await _manualLoginSession.DisposeAsync();
+        _manualLoginSession = null;
     }
 
     private async Task<InstagramConnectionState> LoginAsync(InstagramConnection connection, string password, CancellationToken cancellationToken)
@@ -374,6 +614,27 @@ internal sealed class InstagramConnectionAutomation(
                 await page.WaitForTimeoutAsync(500);
                 return;
             }
+        }
+    }
+
+    private static async Task TryPrefillLoginFormAsync(IPage page, string username, string password)
+    {
+        try
+        {
+            var usernameInput = await ResolveUsernameInputAsync(page);
+            var passwordInput = await ResolvePasswordInputAsync(page);
+
+            if (!string.IsNullOrWhiteSpace(await usernameInput.InputValueAsync()))
+            {
+                return;
+            }
+
+            await usernameInput.FillAsync(username);
+            await passwordInput.FillAsync(password);
+        }
+        catch
+        {
+            // Manual mode stays usable even when Instagram changes the login form.
         }
     }
 
@@ -655,7 +916,9 @@ internal sealed class InstagramConnectionAutomation(
     {
         var url = page.Url;
         if (url.Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
-            url.Contains("two_factor", StringComparison.OrdinalIgnoreCase))
+            url.Contains("two_factor", StringComparison.OrdinalIgnoreCase) ||
+            url.Contains("recaptcha", StringComparison.OrdinalIgnoreCase) ||
+            url.Contains("auth_platform", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
@@ -667,7 +930,9 @@ internal sealed class InstagramConnectionAutomation(
             || bodyText.Contains("Enter confirmation code", StringComparison.OrdinalIgnoreCase)
             || bodyText.Contains("Ingresa el código", StringComparison.OrdinalIgnoreCase)
             || bodyText.Contains("Choose a way to confirm it's you", StringComparison.OrdinalIgnoreCase)
-            || bodyText.Contains("Suspicious Login Attempt", StringComparison.OrdinalIgnoreCase);
+            || bodyText.Contains("Suspicious Login Attempt", StringComparison.OrdinalIgnoreCase)
+            || bodyText.Contains("recaptcha", StringComparison.OrdinalIgnoreCase)
+            || bodyText.Contains("captcha", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<InstagramLoginOutcome> DetectLoginOutcomeAsync(IPage page)
@@ -795,24 +1060,40 @@ internal sealed class InstagramConnectionAutomation(
 
     private async Task EnsureAuthenticatedSessionAsync(IPage page, CancellationToken cancellationToken)
     {
-        await page.GotoAsync("https://www.instagram.com/accounts/edit/", new PageGotoOptions
+        var candidateUrls = new[]
         {
-            WaitUntil = WaitUntilState.DOMContentLoaded,
-            Timeout = _options.LoginTimeoutSeconds * 1_000
-        });
+            "https://www.instagram.com/",
+            "https://www.instagram.com/accounts/onetap/"
+        };
 
-        await page.WaitForTimeoutAsync(2_000);
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var outcome = await ResolveLoginOutcomeAsync(page, cancellationToken);
-        if (outcome == InstagramLoginOutcome.Authenticated)
+        foreach (var candidateUrl in candidateUrls)
         {
-            return;
-        }
+            try
+            {
+                await page.GotoAsync(candidateUrl, new PageGotoOptions
+                {
+                    WaitUntil = WaitUntilState.DOMContentLoaded,
+                    Timeout = _options.LoginTimeoutSeconds * 1_000
+                });
+            }
+            catch (PlaywrightException)
+            {
+                // Instagram sometimes aborts intermediate navigations even when the session is already valid.
+            }
 
-        if (outcome == InstagramLoginOutcome.VerificationRequired)
-        {
-            throw new InvalidOperationException("Instagram still requires manual verification before the session can be used.");
+            await page.WaitForTimeoutAsync(2_000);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var outcome = await ResolveLoginOutcomeAsync(page, cancellationToken);
+            if (outcome == InstagramLoginOutcome.Authenticated)
+            {
+                return;
+            }
+
+            if (outcome == InstagramLoginOutcome.VerificationRequired)
+            {
+                throw new InvalidOperationException("Instagram still requires manual verification before the session can be used.");
+            }
         }
 
         throw new InvalidOperationException(await BuildUnexpectedLoginStateMessageAsync(page));
@@ -878,6 +1159,90 @@ internal sealed class InstagramConnectionAutomation(
         return Path.IsPathRooted(configuredPath)
             ? configuredPath
             : Path.GetFullPath(configuredPath, AppContext.BaseDirectory);
+    }
+
+    private async Task OpenManualLoginPageAsync(IPage page, string targetUrl)
+    {
+        try
+        {
+            await page.GotoAsync(targetUrl, new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.DOMContentLoaded,
+                Timeout = Math.Max(60, _options.LoginTimeoutSeconds) * 1_000
+            });
+            return;
+        }
+        catch (PlaywrightException exception) when (IsManualNavigationAbort(exception, page))
+        {
+            logger.LogWarning(
+                exception,
+                "Instagram manual browser navigation was interrupted, but the page is still open. Continuing with the current page state.");
+
+            if (!page.IsClosed)
+            {
+                await page.WaitForTimeoutAsync(1_500);
+                return;
+            }
+
+            throw;
+        }
+    }
+
+    private static string ResolveManualLoginTargetUrl()
+    {
+        return "https://www.instagram.com/accounts/login/";
+    }
+
+    private static bool IsManualNavigationAbort(PlaywrightException exception, IPage page)
+    {
+        if (page.IsClosed)
+        {
+            return false;
+        }
+
+        var message = exception.Message;
+        if (!message.Contains("ERR_ABORTED", StringComparison.OrdinalIgnoreCase) &&
+            !message.Contains("frame was detached", StringComparison.OrdinalIgnoreCase) &&
+            !message.Contains("maybe frame was detached", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string SafeGetPageUrl(IPage page, string fallback)
+    {
+        try
+        {
+            return string.IsNullOrWhiteSpace(page.Url) ? fallback : page.Url;
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    private sealed class ManualLoginSession(
+        Guid connectionId,
+        IPlaywright playwright,
+        IBrowser browser,
+        IBrowserContext context,
+        IPage page)
+        : IAsyncDisposable
+    {
+        public Guid ConnectionId { get; } = connectionId;
+        public IPlaywright Playwright { get; } = playwright;
+        public IBrowser Browser { get; } = browser;
+        public IBrowserContext Context { get; } = context;
+        public IPage Page { get; } = page;
+
+        public async ValueTask DisposeAsync()
+        {
+            await Context.CloseAsync().ConfigureAwait(false);
+            await Browser.CloseAsync().ConfigureAwait(false);
+            Playwright.Dispose();
+        }
     }
 
     private enum InstagramLoginOutcome

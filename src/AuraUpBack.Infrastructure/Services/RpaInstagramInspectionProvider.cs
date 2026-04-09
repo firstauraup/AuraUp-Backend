@@ -38,6 +38,13 @@ internal sealed partial class RpaInstagramInspectionProvider(
         var sessionStatePath = ResolveSessionStatePath(_options.RpaSessionStatePath);
         var connectionState = await instagramConnectionAutomation.EnsureConnectedAsync(cancellationToken);
 
+        if (!_options.RpaHeadless &&
+            connectionState.Status != Domain.Enums.InstagramConnectionStatus.Connected)
+        {
+            throw new InvalidOperationException(
+                "Instagram manual login is pending. Finish the browser flow from the admin before running inspections or monitoring.");
+        }
+
         if (connectionState.Status == Domain.Enums.InstagramConnectionStatus.VerificationRequired)
         {
             throw new InvalidOperationException(
@@ -221,6 +228,12 @@ internal sealed partial class RpaInstagramInspectionProvider(
         }
         catch (InvalidOperationException exception) when (!request.ReconnectRetryAttempted && IsSessionInterruptionException(exception))
         {
+            if (!_options.RpaHeadless)
+            {
+                throw new InvalidOperationException(
+                    "Instagram session was interrupted while scraping. Finish the manual browser login from the admin before trying again.");
+            }
+
             logger.LogWarning(
                 exception,
                 "RPA session was interrupted while inspecting @{Handle}. Reconnecting and retrying once.",

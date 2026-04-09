@@ -1,12 +1,14 @@
 using AuraUpBack.Application.Abstractions;
 using AuraUpBack.Application.Commands.CreateExplorationRequest;
 using AuraUpBack.Application.Commands.ConnectInstagramIntegration;
+using AuraUpBack.Application.Commands.CompleteInstagramManualLogin;
 using AuraUpBack.Application.Commands.BackfillTrackedAccountHistory;
 using AuraUpBack.Application.Commands.DeleteTrackedAccount;
 using AuraUpBack.Application.Commands.InspectTrackedAccount;
 using AuraUpBack.Application.Commands.RegisterTrackedAccount;
 using AuraUpBack.Application.Commands.ReconnectInstagramIntegration;
 using AuraUpBack.Application.Commands.RunExplorationRequest;
+using AuraUpBack.Application.Commands.StartInstagramManualLogin;
 using AuraUpBack.Application.Commands.TranscribeTrackedPost;
 using AuraUpBack.Application.Commands.UpdateTrackedAccountMonitoring;
 using AuraUpBack.Application.Commands.VerifyInstagramIntegrationCode;
@@ -28,11 +30,13 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IQueryDispatcher, QueryDispatcher>();
 
         services.AddSingleton<ICommandHandler<ConnectInstagramIntegrationCommand, Contracts.InstagramIntegrationDto>, ConnectInstagramIntegrationCommandHandler>();
+        services.AddSingleton<ICommandHandler<CompleteInstagramManualLoginCommand, Contracts.InstagramIntegrationDto>, CompleteInstagramManualLoginCommandHandler>();
         services.AddSingleton<ICommandHandler<BackfillTrackedAccountHistoryCommand, Contracts.BackfillTrackedAccountHistoryDto>, BackfillTrackedAccountHistoryCommandHandler>();
         services.AddSingleton<ICommandHandler<DeleteTrackedAccountCommand, bool>, DeleteTrackedAccountCommandHandler>();
         services.AddSingleton<ICommandHandler<RegisterTrackedAccountCommand, Contracts.TrackedAccountOverviewDto>, RegisterTrackedAccountCommandHandler>();
         services.AddSingleton<ICommandHandler<InspectTrackedAccountCommand, Contracts.TrackedAccountOverviewDto>, InspectTrackedAccountCommandHandler>();
         services.AddSingleton<ICommandHandler<ReconnectInstagramIntegrationCommand, Contracts.InstagramIntegrationDto>, ReconnectInstagramIntegrationCommandHandler>();
+        services.AddSingleton<ICommandHandler<StartInstagramManualLoginCommand, Contracts.InstagramIntegrationDto>, StartInstagramManualLoginCommandHandler>();
         services.AddSingleton<ICommandHandler<VerifyInstagramIntegrationCodeCommand, Contracts.InstagramIntegrationDto>, VerifyInstagramIntegrationCodeCommandHandler>();
         services.AddSingleton<ICommandHandler<CreateExplorationRequestCommand, Contracts.ExplorationRequestDto>, CreateExplorationRequestCommandHandler>();
         services.AddSingleton<ICommandHandler<RunExplorationRequestCommand, Contracts.ExplorationRequestDto>, RunExplorationRequestCommandHandler>();

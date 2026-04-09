@@ -1,6 +1,8 @@
 using AuraUpBack.Application.Abstractions;
+using AuraUpBack.Domain.Enums;
 using AuraUpBack.Domain.Entities;
 using AuraUpBack.Domain.Repositories;
+using AuraUpBack.Domain.Services;
 using AuraUpBack.Infrastructure.Abstractions;
 using AuraUpBack.Infrastructure.Options;
 using Microsoft.Extensions.Hosting;
@@ -13,6 +15,9 @@ public sealed class MonitoringBackgroundService(
     ITrackedAccountRepository trackedAccountRepository,
     IInspectionJobQueue inspectionJobQueue,
     InspectionJobRunner inspectionJobRunner,
+    IInstagramConnectionAutomation instagramConnectionAutomation,
+    IInstagramSettingsService instagramSettingsService,
+    IOptions<InstagramIntegrationOptions> instagramOptions,
     IOptions<AuraUpBackStorageOptions> options,
     ILogger<MonitoringBackgroundService> logger) : BackgroundService
 {
@@ -22,6 +27,19 @@ public sealed class MonitoringBackgroundService(
 
         while (!stoppingToken.IsCancellationRequested)
         {
+            if (ShouldPauseMonitoringForManualInstagram(instagramSettingsService.Current.Provider, instagramOptions.Value))
+            {
+                var instagramState = await instagramConnectionAutomation.GetStatusAsync(stoppingToken);
+                if (instagramState.Status != InstagramConnectionStatus.Connected)
+                {
+                    logger.LogInformation(
+                        "Monitoring paused while Instagram manual login is pending. Current status: {Status}",
+                        instagramState.Status);
+                    await Task.Delay(delay, stoppingToken);
+                    continue;
+                }
+            }
+
             var accounts = await trackedAccountRepository.GetAllAsync(stoppingToken);
             var nowUtc = DateTime.UtcNow;
 
@@ -65,6 +83,16 @@ public sealed class MonitoringBackgroundService(
 
             await Task.Delay(delay, stoppingToken);
         }
+    }
+
+    private static bool ShouldPauseMonitoringForManualInstagram(string provider, InstagramIntegrationOptions options)
+    {
+        if (options.RpaHeadless)
+        {
+            return false;
+        }
+
+        return provider.Equals("Rpa", StringComparison.OrdinalIgnoreCase);
     }
 
     private static DateTime GetLastAttemptAtUtc(TrackedAccount account, InspectionJobStatus? latestJob)
