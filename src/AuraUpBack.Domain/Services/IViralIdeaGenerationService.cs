@@ -10,6 +10,11 @@ public interface IViralIdeaGenerationService
         ViralIdeaGenerationRequest request,
         Func<ViralIdeaGenerationStreamEvent, Task> onEvent,
         CancellationToken cancellationToken);
+
+    IReadOnlyCollection<ViralReelIdea> ExtractIdeasFromDraft(
+        string generatedText,
+        int expectedCount,
+        bool allowPartial = false);
 }
 
 public sealed record ViralIdeaGenerationRequest(

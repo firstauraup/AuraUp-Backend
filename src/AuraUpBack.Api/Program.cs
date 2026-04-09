@@ -941,6 +941,7 @@ app.MapPost("/api/accounts/{accountId:guid}/ideas/generate/stream", async (
     httpContext.Response.ContentType = "text/event-stream";
     httpContext.Response.Headers.CacheControl = "no-cache";
     httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
+    var streamedDraft = new System.Text.StringBuilder();
 
     try
     {
@@ -950,6 +951,7 @@ app.MapPost("/api/accounts/{accountId:guid}/ideas/generate/stream", async (
             {
                 if (streamEvent.Type == "delta")
                 {
+                    streamedDraft.Append(streamEvent.Delta);
                     await WriteSseEventAsync(httpContext, new
                     {
                         type = "delta",
@@ -979,6 +981,32 @@ app.MapPost("/api/accounts/{accountId:guid}/ideas/generate/stream", async (
                 }
             },
             cancellationToken);
+    }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    {
+        try
+        {
+            var partialIdeas = viralIdeaGenerationService.ExtractIdeasFromDraft(
+                streamedDraft.ToString(),
+                preparation.RequestedIdeaCount,
+                allowPartial: true);
+
+            if (partialIdeas.Count > 0)
+            {
+                var batch = ViralIdeaBatch.Create(
+                    preparation.AccountId,
+                    preparation.AccountHandle,
+                    preparation.Objective,
+                    preparation.RequestedIdeaCount,
+                    partialIdeas,
+                    DateTime.UtcNow);
+
+                await viralIdeaBatchRepository.UpsertAsync(batch, CancellationToken.None);
+            }
+        }
+        catch
+        {
+        }
     }
     catch (Exception exception)
     {

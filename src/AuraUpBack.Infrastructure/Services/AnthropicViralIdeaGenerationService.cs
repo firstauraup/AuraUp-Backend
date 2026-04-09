@@ -33,6 +33,14 @@ internal sealed class AnthropicViralIdeaGenerationService(
         return ParseIdeasFromResponseText(responseText, request.RequestedIdeaCount);
     }
 
+    public IReadOnlyCollection<ViralReelIdea> ExtractIdeasFromDraft(
+        string generatedText,
+        int expectedCount,
+        bool allowPartial = false)
+    {
+        return ParseIdeasFromGeneratedText(generatedText, expectedCount, allowPartial);
+    }
+
     public async Task StreamIdeasAsync(
         ViralIdeaGenerationRequest request,
         Func<ViralIdeaGenerationStreamEvent, Task> onEvent,
@@ -103,7 +111,7 @@ internal sealed class AnthropicViralIdeaGenerationService(
 
         await ProcessStreamFrameAsync(currentEvent, currentData.ToString(), outputBuffer, onEvent);
 
-        var ideas = ParseIdeasFromGeneratedText(outputBuffer.ToString(), request.RequestedIdeaCount);
+        var ideas = ParseIdeasFromGeneratedText(outputBuffer.ToString(), request.RequestedIdeaCount, allowPartial: false);
         await onEvent(new ViralIdeaGenerationStreamEvent("completed", string.Empty, ideas));
     }
 
@@ -244,12 +252,15 @@ internal sealed class AnthropicViralIdeaGenerationService(
                 .Select(item => item.Text?.Trim())
                 .Where(textItem => !string.IsNullOrWhiteSpace(textItem)));
 
-        return ParseIdeasFromGeneratedText(text, expectedCount);
+        return ParseIdeasFromGeneratedText(text, expectedCount, allowPartial: false);
     }
 
-    private IReadOnlyCollection<ViralReelIdea> ParseIdeasFromGeneratedText(string generatedText, int expectedCount)
+    private IReadOnlyCollection<ViralReelIdea> ParseIdeasFromGeneratedText(string generatedText, int expectedCount, bool allowPartial)
     {
-        var jsonPayload = ExtractJsonPayload(generatedText);
+        var jsonPayload = allowPartial
+            ? ExtractPartialJsonPayload(generatedText)
+            : ExtractJsonPayload(generatedText);
+
         var parsed = JsonSerializer.Deserialize<ViralIdeaResponseEnvelope>(jsonPayload, JsonOptions)
             ?? throw new InvalidOperationException("Anthropic returned invalid idea JSON.");
 
@@ -268,9 +279,14 @@ internal sealed class AnthropicViralIdeaGenerationService(
             .OrderBy(idea => idea.Rank)
             .ToList();
 
-        if (ideas.Count != expectedCount)
+        if (!allowPartial && ideas.Count != expectedCount)
         {
             throw new InvalidOperationException($"Anthropic returned {ideas.Count} ideas. Expected exactly {expectedCount}.");
+        }
+
+        if (allowPartial && ideas.Count == 0)
+        {
+            throw new InvalidOperationException("Anthropic draft did not contain any complete ideas yet.");
         }
 
         return ideas;
@@ -347,6 +363,91 @@ internal sealed class AnthropicViralIdeaGenerationService(
         }
 
         return trimmed[start..(end + 1)];
+    }
+
+    private static string ExtractPartialJsonPayload(string source)
+    {
+        var trimmed = source.Trim();
+        var ideasIndex = trimmed.IndexOf("\"ideas\"", StringComparison.OrdinalIgnoreCase);
+        if (ideasIndex < 0)
+        {
+            throw new InvalidOperationException("Anthropic draft did not contain an ideas array.");
+        }
+
+        var arrayStart = trimmed.IndexOf('[', ideasIndex);
+        if (arrayStart < 0)
+        {
+            throw new InvalidOperationException("Anthropic draft did not contain a readable ideas array.");
+        }
+
+        var items = new List<string>();
+        var depth = 0;
+        var objectStart = -1;
+        var inString = false;
+        var escaped = false;
+
+        for (var index = arrayStart + 1; index < trimmed.Length; index++)
+        {
+            var character = trimmed[index];
+
+            if (escaped)
+            {
+                escaped = false;
+                continue;
+            }
+
+            if (character == '\\')
+            {
+                escaped = true;
+                continue;
+            }
+
+            if (character == '"')
+            {
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+            {
+                continue;
+            }
+
+            if (character == '{')
+            {
+                if (depth == 0)
+                {
+                    objectStart = index;
+                }
+
+                depth++;
+                continue;
+            }
+
+            if (character == '}')
+            {
+                if (depth == 0)
+                {
+                    continue;
+                }
+
+                depth--;
+                if (depth == 0 && objectStart >= 0)
+                {
+                    items.Add(trimmed[objectStart..(index + 1)]);
+                    objectStart = -1;
+                }
+
+                continue;
+            }
+        }
+
+        if (items.Count == 0)
+        {
+            throw new InvalidOperationException("Anthropic draft did not contain any complete ideas yet.");
+        }
+
+        return $"{{\"ideas\":[{string.Join(",", items)}]}}";
     }
 
     private sealed record AnthropicMessagesRequest(
