@@ -8,6 +8,7 @@ using AuraUpBack.Infrastructure.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Playwright;
+using System.Text.Json;
 
 namespace AuraUpBack.Infrastructure.Services;
 
@@ -98,7 +99,7 @@ internal sealed class InstagramConnectionAutomation(
             var sessionStatePath = ResolveSessionStatePath(connection);
             connection.SessionStatePath = sessionStatePath;
 
-            if (await SessionLooksValidAsync(sessionStatePath, cancellationToken))
+            if (await ImportedSessionLooksUsableAsync(sessionStatePath, cancellationToken))
             {
                 connection.MarkConnected(DateTime.UtcNow);
             }
@@ -604,6 +605,74 @@ internal sealed class InstagramConnectionAutomation(
             await EnsureAuthenticatedSessionAsync(page, cancellationToken);
             await InstagramBrowserProfileService.ExportSessionStateAsync(context, sessionStatePath);
             return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task<bool> ImportedSessionLooksUsableAsync(string sessionStatePath, CancellationToken cancellationToken)
+    {
+        if (await SessionLooksValidAsync(sessionStatePath, cancellationToken))
+        {
+            return true;
+        }
+
+        return HasInstagramSessionCookies(sessionStatePath);
+    }
+
+    private static bool HasInstagramSessionCookies(string sessionStatePath)
+    {
+        if (!File.Exists(sessionStatePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var stream = File.OpenRead(sessionStatePath);
+            using var document = JsonDocument.Parse(stream);
+            if (!document.RootElement.TryGetProperty("cookies", out var cookiesElement) ||
+                cookiesElement.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            var hasSessionId = false;
+            var hasUserId = false;
+
+            foreach (var cookie in cookiesElement.EnumerateArray())
+            {
+                var name = cookie.TryGetProperty("name", out var nameElement)
+                    ? nameElement.GetString() ?? string.Empty
+                    : string.Empty;
+                var domain = cookie.TryGetProperty("domain", out var domainElement)
+                    ? domainElement.GetString() ?? string.Empty
+                    : string.Empty;
+                var value = cookie.TryGetProperty("value", out var valueElement)
+                    ? valueElement.GetString() ?? string.Empty
+                    : string.Empty;
+
+                if (!domain.Contains("instagram.com", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (string.Equals(name, "sessionid", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(value))
+                {
+                    hasSessionId = true;
+                }
+
+                if ((string.Equals(name, "ds_user_id", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(name, "csrftoken", StringComparison.OrdinalIgnoreCase)) &&
+                    !string.IsNullOrWhiteSpace(value))
+                {
+                    hasUserId = true;
+                }
+            }
+
+            return hasSessionId && hasUserId;
         }
         catch
         {

@@ -162,7 +162,8 @@ static async Task<string> LoginBackendAsync(SessionToolOptions options)
 
     using var httpClient = new HttpClient
     {
-        BaseAddress = new Uri(NormalizeApiBaseUrl(options.ApiBaseUrl))
+        BaseAddress = new Uri(NormalizeApiBaseUrl(options.ApiBaseUrl)),
+        Timeout = TimeSpan.FromMinutes(10)
     };
 
     var response = await httpClient.PostAsJsonAsync("/api/auth/login", new
@@ -189,7 +190,8 @@ static async Task UploadSessionPackageAsync(
 {
     using var httpClient = new HttpClient
     {
-        BaseAddress = new Uri(NormalizeApiBaseUrl(options.ApiBaseUrl))
+        BaseAddress = new Uri(NormalizeApiBaseUrl(options.ApiBaseUrl)),
+        Timeout = TimeSpan.FromMinutes(10)
     };
     httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", backendToken);
 
