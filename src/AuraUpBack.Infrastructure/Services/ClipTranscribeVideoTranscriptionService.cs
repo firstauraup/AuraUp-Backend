@@ -50,8 +50,32 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 Width = 1440,
                 Height = 1080
             },
-            UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            BypassCSP = true,
+            StrictSelectors = true,
+            ServiceWorkers = ServiceWorkerPolicy.Block
         });
+
+        await context.AddInitScriptAsync(
+            """
+            () => {
+              try {
+                window.localStorage?.clear();
+              } catch {}
+
+              try {
+                window.sessionStorage?.clear();
+              } catch {}
+
+              try {
+                if ('caches' in window) {
+                  caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))));
+                }
+              } catch {}
+            }
+            """);
+
+        await context.ClearCookiesAsync();
 
         var page = await context.NewPageAsync();
         page.SetDefaultTimeout(Math.Max(15, _options.RequestTimeoutSeconds) * 1000);
