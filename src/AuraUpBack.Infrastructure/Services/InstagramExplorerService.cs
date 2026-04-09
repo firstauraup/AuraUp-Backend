@@ -15,6 +15,7 @@ namespace AuraUpBack.Infrastructure.Services;
 
 internal sealed partial class InstagramExplorerService(
     IInstagramConnectionAutomation instagramConnectionAutomation,
+    InstagramBrowserProfileService browserProfileService,
     IMemoryCache memoryCache,
     IOptions<InstagramIntegrationOptions> options,
     ILogger<InstagramExplorerService> logger)
@@ -302,94 +303,137 @@ internal sealed partial class InstagramExplorerService(
 
         try
         {
-        var session = await ResolveExplorerSessionAsync(cancellationToken);
+            var session = await ResolveExplorerSessionAsync(cancellationToken);
+            var usePersistentProfile = session.HasSession;
+            InstagramBrowserProfileService.PersistentBrowserLease? persistentLease = null;
+            IPlaywright? playwright = null;
+            IBrowser? browser = null;
+            IBrowserContext? context = null;
+            IPage? pageInstance = null;
 
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = _options.RpaHeadless,
-            ChromiumSandbox = false,
-            Args =
-            [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-gpu",
-                "--disable-dev-shm-usage"
-            ]
-        });
-
-        await using var context = await CreateContextAsync(browser, session);
-        var pageInstance = await context.NewPageAsync();
-        var searchUrl = $"https://www.instagram.com/explore/search/keyword/?q={Uri.EscapeDataString(query)}";
-
-        await pageInstance.GotoAsync(searchUrl, new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded,
-            Timeout = Math.Max(5, _options.ExplorerNavigationTimeoutSeconds) * 1_000
-        });
-
-        await pageInstance.WaitForTimeoutAsync(1_250);
-
-        var discoveredUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var maxCandidates = Math.Max(targetResults * 3, 80);
-
-        for (var attempt = 0; attempt < 8 && discoveredUrls.Count < maxCandidates; attempt++)
-        {
-            foreach (var url in await ReadVisibleReelLinksAsync(pageInstance))
+            try
             {
-                discoveredUrls.Add(url);
-            }
-
-            await pageInstance.EvaluateAsync(
-                """
-                () => {
-                  if (document.scrollingElement) {
-                    document.scrollingElement.scrollTop = document.scrollingElement.scrollHeight;
-                  }
-                  window.scrollTo(0, document.body.scrollHeight);
-                }
-                """);
-            await pageInstance.Mouse.WheelAsync(0, 2400);
-            await pageInstance.WaitForTimeoutAsync(600);
-        }
-
-        var reels = new ConcurrentBag<ExplorerReel>();
-        await Parallel.ForEachAsync(
-            discoveredUrls,
-            new ParallelOptions
-            {
-                CancellationToken = cancellationToken,
-                MaxDegreeOfParallelism = Math.Max(1, _options.ExplorerMaxConcurrentReelLoads)
-            },
-            async (url, token) =>
-            {
-                try
+                if (usePersistentProfile)
                 {
-                    var reel = await ReadReelAsync(context, url, token);
-                    if (reel is not null)
+                    persistentLease = await browserProfileService.AcquireAsync(_options.RpaHeadless, cancellationToken);
+                    context = persistentLease.Context;
+                    await InstagramBrowserProfileService.ExportSessionStateAsync(context, session.SessionStatePath);
+                }
+                else
+                {
+                    playwright = await Playwright.CreateAsync();
+                    browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
                     {
-                        reels.Add(reel);
-                    }
+                        Headless = _options.RpaHeadless,
+                        ChromiumSandbox = false,
+                        Args =
+                        [
+                            "--no-sandbox",
+                            "--disable-setuid-sandbox",
+                            "--disable-gpu",
+                            "--disable-dev-shm-usage"
+                        ]
+                    });
+
+                    context = await CreateContextAsync(browser, session);
                 }
-                catch (Exception exception)
+
+                pageInstance = await context.NewPageAsync();
+                var searchUrl = $"https://www.instagram.com/explore/search/keyword/?q={Uri.EscapeDataString(query)}";
+
+                await pageInstance.GotoAsync(searchUrl, new PageGotoOptions
                 {
-                    logger.LogWarning(exception, "Explorer could not read reel {Url}", url);
+                    WaitUntil = WaitUntilState.DOMContentLoaded,
+                    Timeout = Math.Max(5, _options.ExplorerNavigationTimeoutSeconds) * 1_000
+                });
+
+                await pageInstance.WaitForTimeoutAsync(1_250);
+
+                var discoveredUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var maxCandidates = Math.Max(targetResults * 3, 80);
+
+                for (var attempt = 0; attempt < 8 && discoveredUrls.Count < maxCandidates; attempt++)
+                {
+                    foreach (var url in await ReadVisibleReelLinksAsync(pageInstance))
+                    {
+                        discoveredUrls.Add(url);
+                    }
+
+                    await pageInstance.EvaluateAsync(
+                        """
+                        () => {
+                          if (document.scrollingElement) {
+                            document.scrollingElement.scrollTop = document.scrollingElement.scrollHeight;
+                          }
+                          window.scrollTo(0, document.body.scrollHeight);
+                        }
+                        """);
+                    await pageInstance.Mouse.WheelAsync(0, 2400);
+                    await pageInstance.WaitForTimeoutAsync(600);
                 }
-            });
 
-        var filtered = reels
-            .Where(x => !minViews.HasValue || x.Views >= minViews.Value)
-            .Where(x => !minLikes.HasValue || x.Likes >= minLikes.Value)
-            .Where(x => !minComments.HasValue || x.Comments >= minComments.Value)
-            .Where(x => !minShares.HasValue || x.Shares >= minShares.Value)
-            .OrderByDescending(x => ResolveSortValue(x, sortBy))
-            .ThenByDescending(x => x.PublishedAtUtc)
-            .ToList();
+                var reels = new ConcurrentBag<ExplorerReel>();
+                await Parallel.ForEachAsync(
+                    discoveredUrls,
+                    new ParallelOptions
+                    {
+                        CancellationToken = cancellationToken,
+                        MaxDegreeOfParallelism = Math.Max(1, _options.ExplorerMaxConcurrentReelLoads)
+                    },
+                    async (url, token) =>
+                    {
+                        try
+                        {
+                            var reel = await ReadReelAsync(context, url, token);
+                            if (reel is not null)
+                            {
+                                reels.Add(reel);
+                            }
+                        }
+                        catch (Exception exception)
+                        {
+                            logger.LogWarning(exception, "Explorer could not read reel {Url}", url);
+                        }
+                    });
 
-        return new CachedExplorerSearch(
-            filtered,
-            Math.Max(targetResults, filtered.Count),
-            discoveredUrls.Count >= maxCandidates);
+                var filtered = reels
+                    .Where(x => !minViews.HasValue || x.Views >= minViews.Value)
+                    .Where(x => !minLikes.HasValue || x.Likes >= minLikes.Value)
+                    .Where(x => !minComments.HasValue || x.Comments >= minComments.Value)
+                    .Where(x => !minShares.HasValue || x.Shares >= minShares.Value)
+                    .OrderByDescending(x => ResolveSortValue(x, sortBy))
+                    .ThenByDescending(x => x.PublishedAtUtc)
+                    .ToList();
+
+                return new CachedExplorerSearch(
+                    filtered,
+                    Math.Max(targetResults, filtered.Count),
+                    discoveredUrls.Count >= maxCandidates);
+            }
+            finally
+            {
+                if (pageInstance is not null)
+                {
+                    await pageInstance.CloseAsync();
+                }
+
+                if (persistentLease is not null)
+                {
+                    await persistentLease.DisposeAsync();
+                }
+
+                if (context is not null && !usePersistentProfile)
+                {
+                    await context.CloseAsync();
+                }
+
+                if (browser is not null)
+                {
+                    await browser.CloseAsync();
+                }
+
+                playwright?.Dispose();
+            }
         }
         finally
         {

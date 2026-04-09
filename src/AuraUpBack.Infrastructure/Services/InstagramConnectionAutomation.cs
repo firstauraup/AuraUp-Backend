@@ -15,6 +15,7 @@ internal sealed class InstagramConnectionAutomation(
     IInstagramConnectionRepository instagramConnectionRepository,
     IInstagramCredentialVault credentialVault,
     IOptions<InstagramIntegrationOptions> options,
+    InstagramBrowserProfileService browserProfileService,
     IInstagramSettingsService settingsService,
     ILogger<InstagramConnectionAutomation> logger)
     : IInstagramConnectionAutomation
@@ -33,7 +34,7 @@ internal sealed class InstagramConnectionAutomation(
         var nowUtc = DateTime.UtcNow;
         var encryptedPassword = credentialVault.Encrypt(password.Trim());
         var sessionStatePath = ResolveSessionStatePath(_options.RpaSessionStatePath);
-        Directory.CreateDirectory(ResolveUserDataDirPath());
+        browserProfileService.EnsureProfileDirectory();
         var connection = await instagramConnectionRepository.GetActiveAsync(cancellationToken)
             ?? InstagramConnection.Create(username, encryptedPassword, sessionStatePath, nowUtc);
 
@@ -106,7 +107,7 @@ internal sealed class InstagramConnectionAutomation(
         }
 
         var sessionStatePath = ResolveSessionStatePath(connection);
-        if (!File.Exists(sessionStatePath) && !HasPersistentProfile())
+        if (!File.Exists(sessionStatePath) && !browserProfileService.HasPersistentProfile())
         {
             throw new InvalidOperationException("The verification session was not found. Start the connection again.");
         }
@@ -130,7 +131,7 @@ internal sealed class InstagramConnectionAutomation(
 
         var sessionStatePath = ResolveSessionStatePath(connection);
         var sessionExists = File.Exists(sessionStatePath);
-        if ((sessionExists || HasPersistentProfile()) && await SessionLooksValidAsync(sessionStatePath, cancellationToken))
+        if ((sessionExists || browserProfileService.HasPersistentProfile()) && await SessionLooksValidAsync(sessionStatePath, cancellationToken))
         {
             connection.SessionStatePath = sessionStatePath;
             connection.MarkValidated(DateTime.UtcNow);
@@ -206,10 +207,9 @@ internal sealed class InstagramConnectionAutomation(
 
             await DisposeManualLoginSessionAsync();
 
-            var playwright = await Playwright.CreateAsync();
-            var context = await LaunchPersistentContextAsync(playwright, headless: false);
-            var page = await GetOrCreatePrimaryPageAsync(context);
-            _manualLoginSession = new ManualLoginSession(connection.Id, playwright, context, page);
+            var lease = await browserProfileService.AcquireAsync(headless: false, cancellationToken);
+            var page = await InstagramBrowserProfileService.GetOrCreatePrimaryPageAsync(lease.Context);
+            _manualLoginSession = new ManualLoginSession(connection.Id, lease, page);
 
             var targetUrl = ResolveManualLoginTargetUrl();
             await OpenManualLoginPageAsync(page, targetUrl);
@@ -307,7 +307,7 @@ internal sealed class InstagramConnectionAutomation(
         if (outcome == InstagramLoginOutcome.Authenticated && completeIfAuthenticated)
         {
             await EnsureAuthenticatedSessionAsync(page, cancellationToken);
-            await ExportSessionStateAsync(session.Context, connection.SessionStatePath);
+            await InstagramBrowserProfileService.ExportSessionStateAsync(session.Context, connection.SessionStatePath);
 
             connection.MarkConnected(DateTime.UtcNow);
             await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
@@ -363,9 +363,9 @@ internal sealed class InstagramConnectionAutomation(
 
         try
         {
-            using var playwright = await Playwright.CreateAsync();
-            await using var context = await LaunchPersistentContextAsync(playwright, _options.RpaHeadless);
-            var page = await GetOrCreatePrimaryPageAsync(context);
+            await using var lease = await browserProfileService.AcquireAsync(_options.RpaHeadless, cancellationToken);
+            var context = lease.Context;
+            var page = await InstagramBrowserProfileService.GetOrCreatePrimaryPageAsync(context);
             await page.GotoAsync("https://www.instagram.com/accounts/login/", new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.DOMContentLoaded,
@@ -398,7 +398,7 @@ internal sealed class InstagramConnectionAutomation(
 
             if (loginOutcome == InstagramLoginOutcome.VerificationRequired)
             {
-                await ExportSessionStateAsync(context, connection.SessionStatePath);
+                await InstagramBrowserProfileService.ExportSessionStateAsync(context, connection.SessionStatePath);
 
                 connection.MarkVerificationRequired(
                     "Instagram requires manual verification. Complete the captcha or code challenge in the opened browser window, then retry if needed.",
@@ -419,7 +419,7 @@ internal sealed class InstagramConnectionAutomation(
             }
 
             await EnsureAuthenticatedSessionAsync(page, cancellationToken);
-            await ExportSessionStateAsync(context, connection.SessionStatePath);
+            await InstagramBrowserProfileService.ExportSessionStateAsync(context, connection.SessionStatePath);
 
             connection.MarkConnected(DateTime.UtcNow);
             await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
@@ -442,9 +442,9 @@ internal sealed class InstagramConnectionAutomation(
     {
         try
         {
-            using var playwright = await Playwright.CreateAsync();
-            await using var context = await LaunchPersistentContextAsync(playwright, _options.RpaHeadless);
-            var page = await GetOrCreatePrimaryPageAsync(context);
+            await using var lease = await browserProfileService.AcquireAsync(_options.RpaHeadless, cancellationToken);
+            var context = lease.Context;
+            var page = await InstagramBrowserProfileService.GetOrCreatePrimaryPageAsync(context);
             var targetUrl = string.IsNullOrWhiteSpace(connection.VerificationUrl)
                 ? "https://www.instagram.com/"
                 : connection.VerificationUrl;
@@ -461,7 +461,7 @@ internal sealed class InstagramConnectionAutomation(
             {
                 if (await IsAuthenticatedAsync(page))
                 {
-                    await ExportSessionStateAsync(context, connection.SessionStatePath);
+                    await InstagramBrowserProfileService.ExportSessionStateAsync(context, connection.SessionStatePath);
 
                     connection.MarkConnected(DateTime.UtcNow);
                     await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
@@ -493,7 +493,7 @@ internal sealed class InstagramConnectionAutomation(
                 throw new InvalidOperationException("Instagram verification did not finish successfully.");
             }
 
-            await ExportSessionStateAsync(context, connection.SessionStatePath);
+            await InstagramBrowserProfileService.ExportSessionStateAsync(context, connection.SessionStatePath);
 
             connection.MarkConnected(DateTime.UtcNow);
             await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
@@ -510,13 +510,13 @@ internal sealed class InstagramConnectionAutomation(
 
     private async Task<bool> SessionLooksValidAsync(string sessionStatePath, CancellationToken cancellationToken)
     {
-        using var playwright = await Playwright.CreateAsync();
-        await using var context = await LaunchPersistentContextAsync(playwright, _options.RpaHeadless);
-        var page = await GetOrCreatePrimaryPageAsync(context);
+        await using var lease = await browserProfileService.AcquireAsync(_options.RpaHeadless, cancellationToken);
+        var context = lease.Context;
+        var page = await InstagramBrowserProfileService.GetOrCreatePrimaryPageAsync(context);
         try
         {
             await EnsureAuthenticatedSessionAsync(page, cancellationToken);
-            await ExportSessionStateAsync(context, sessionStatePath);
+            await InstagramBrowserProfileService.ExportSessionStateAsync(context, sessionStatePath);
             return true;
         }
         catch
@@ -1034,7 +1034,7 @@ internal sealed class InstagramConnectionAutomation(
         var settings = settingsService.Current;
         var provider = string.IsNullOrWhiteSpace(settings.Provider) ? _options.Provider : settings.Provider;
         var sessionStatePath = ResolveSessionStatePath(connection);
-        var sessionExists = File.Exists(sessionStatePath) || HasPersistentProfile();
+        var sessionExists = File.Exists(sessionStatePath) || browserProfileService.HasPersistentProfile();
 
         return new InstagramConnectionState(
             provider,
@@ -1064,7 +1064,7 @@ internal sealed class InstagramConnectionAutomation(
             InstagramConnectionStatus.Disconnected,
             false,
             sessionStatePath,
-            File.Exists(sessionStatePath) || HasPersistentProfile(),
+            File.Exists(sessionStatePath) || browserProfileService.HasPersistentProfile(),
             string.Empty,
             null,
             null,
@@ -1091,76 +1091,6 @@ internal sealed class InstagramConnectionAutomation(
         return Path.IsPathRooted(configuredPath)
             ? configuredPath
             : Path.GetFullPath(configuredPath, AppContext.BaseDirectory);
-    }
-
-    private string ResolveUserDataDirPath()
-    {
-        var configuredPath = string.IsNullOrWhiteSpace(_options.RpaUserDataDirPath)
-            ? "App_Data/instagram-rpa-profile"
-            : _options.RpaUserDataDirPath;
-
-        return Path.IsPathRooted(configuredPath)
-            ? configuredPath
-            : Path.GetFullPath(configuredPath, AppContext.BaseDirectory);
-    }
-
-    private bool HasPersistentProfile()
-    {
-        var userDataDirPath = ResolveUserDataDirPath();
-        if (!Directory.Exists(userDataDirPath))
-        {
-            return false;
-        }
-
-        return Directory.EnumerateFileSystemEntries(userDataDirPath).Any();
-    }
-
-    private async Task<IBrowserContext> LaunchPersistentContextAsync(IPlaywright playwright, bool headless)
-    {
-        var userDataDirPath = ResolveUserDataDirPath();
-        Directory.CreateDirectory(userDataDirPath);
-
-        return await playwright.Chromium.LaunchPersistentContextAsync(userDataDirPath, new BrowserTypeLaunchPersistentContextOptions
-        {
-            Headless = headless,
-            SlowMo = headless ? 0 : 75,
-            ChromiumSandbox = false,
-            ViewportSize = new ViewportSize
-            {
-                Width = 1440,
-                Height = 980
-            },
-            Args =
-            [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-background-networking",
-                "--disable-background-timer-throttling",
-                "--disable-renderer-backgrounding",
-                "--disable-backgrounding-occluded-windows"
-            ]
-        });
-    }
-
-    private static async Task<IPage> GetOrCreatePrimaryPageAsync(IBrowserContext context)
-    {
-        var page = context.Pages.FirstOrDefault(page => !page.IsClosed);
-        if (page is not null)
-        {
-            return page;
-        }
-
-        return await context.NewPageAsync();
-    }
-
-    private static async Task ExportSessionStateAsync(IBrowserContext context, string sessionStatePath)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(sessionStatePath) ?? AppContext.BaseDirectory);
-        await context.StorageStateAsync(new BrowserContextStorageStateOptions
-        {
-            Path = sessionStatePath
-        });
     }
 
     private async Task OpenManualLoginPageAsync(IPage page, string targetUrl)
@@ -1227,20 +1157,17 @@ internal sealed class InstagramConnectionAutomation(
 
     private sealed class ManualLoginSession(
         Guid connectionId,
-        IPlaywright playwright,
-        IBrowserContext context,
+        InstagramBrowserProfileService.PersistentBrowserLease lease,
         IPage page)
         : IAsyncDisposable
     {
         public Guid ConnectionId { get; } = connectionId;
-        public IPlaywright Playwright { get; } = playwright;
-        public IBrowserContext Context { get; } = context;
+        public IBrowserContext Context { get; } = lease.Context;
         public IPage Page { get; } = page;
 
         public async ValueTask DisposeAsync()
         {
-            await Context.CloseAsync().ConfigureAwait(false);
-            Playwright.Dispose();
+            await lease.DisposeAsync().ConfigureAwait(false);
         }
     }
 

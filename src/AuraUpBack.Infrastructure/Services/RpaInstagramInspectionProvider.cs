@@ -14,6 +14,7 @@ namespace AuraUpBack.Infrastructure.Services;
 
 internal sealed partial class RpaInstagramInspectionProvider(
     IInstagramConnectionAutomation instagramConnectionAutomation,
+    InstagramBrowserProfileService browserProfileService,
     IOptions<InstagramIntegrationOptions> options,
     IInspectionJobQueue inspectionJobQueue,
     ILogger<RpaInstagramInspectionProvider> logger)
@@ -60,42 +61,70 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 $"RPA session file was not found at '{sessionStatePath}' and there is no valid Instagram login. Connect Instagram first or enable public profile mode.");
         }
 
-        using var playwright = await Playwright.CreateAsync();
-        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-        {
-            Headless = _options.RpaHeadless,
-            ChromiumSandbox = false,
-            Args =
-            [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-                "--disable-features=site-per-process",
-                "--disable-background-networking",
-                "--disable-background-timer-throttling",
-                "--disable-renderer-backgrounding",
-                "--disable-backgrounding-occluded-windows"
-            ]
-        });
-
         logger.LogInformation("RPA inspection started for @{Handle}", normalizedHandle);
         IBrowserContext? context = null;
+        InstagramBrowserProfileService.PersistentBrowserLease? persistentLease = null;
+        IPlaywright? playwright = null;
+        IBrowser? browser = null;
+        IPage? page = null;
+        var usePersistentProfile = hasAuthenticatedSession;
 
         try
         {
+            if (usePersistentProfile)
+            {
+                persistentLease = await browserProfileService.AcquireAsync(_options.RpaHeadless, cancellationToken);
+                context = persistentLease.Context;
+                await InstagramBrowserProfileService.ExportSessionStateAsync(context, sessionStatePath);
+            }
+            else
+            {
+                playwright = await Playwright.CreateAsync();
+                browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+                {
+                    Headless = _options.RpaHeadless,
+                    ChromiumSandbox = false,
+                    Args =
+                    [
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-gpu",
+                        "--disable-dev-shm-usage",
+                        "--disable-features=site-per-process",
+                        "--disable-background-networking",
+                        "--disable-background-timer-throttling",
+                        "--disable-renderer-backgrounding",
+                        "--disable-backgrounding-occluded-windows"
+                    ]
+                });
+            }
+
             RpaProfileData? profileData = null;
-            IPage? page = null;
 
             for (var attempt = 1; attempt <= 3; attempt++)
             {
-                if (context is not null)
+                if (!usePersistentProfile && context is not null)
                 {
                     await TryCloseContextAsync(context);
                     context = null;
                 }
 
-                context = await CreateContextAsync(browser, hasAuthenticatedSession, sessionStatePath);
+                if (page is not null)
+                {
+                    await TryClosePageAsync(page);
+                    page = null;
+                }
+
+                if (!usePersistentProfile)
+                {
+                    context = await CreateContextAsync(browser!, hasAuthenticatedSession, sessionStatePath);
+                }
+
+                if (context is null)
+                {
+                    throw new InvalidOperationException("RPA browser context was not initialized.");
+                }
+
                 page = await context.NewPageAsync();
 
                 try
@@ -268,10 +297,27 @@ internal sealed partial class RpaInstagramInspectionProvider(
         }
         finally
         {
-            if (context is not null)
+            if (page is not null)
+            {
+                await TryClosePageAsync(page);
+            }
+
+            if (!usePersistentProfile && context is not null)
             {
                 await TryCloseContextAsync(context);
             }
+
+            if (persistentLease is not null)
+            {
+                await persistentLease.DisposeAsync();
+            }
+
+            if (browser is not null)
+            {
+                await browser.CloseAsync();
+            }
+
+            playwright?.Dispose();
         }
     }
 

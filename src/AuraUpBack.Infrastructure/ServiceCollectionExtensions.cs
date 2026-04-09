@@ -46,6 +46,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IInstagramCredentialVault, InstagramCredentialVault>();
         services.AddSingleton<IInstagramSettingsService, InstagramSettingsService>();
         services.AddSingleton<IMediaAssetStorage, MinioMediaStorage>();
+        services.AddSingleton<InstagramBrowserProfileService>();
         services.AddSingleton<IInstagramConnectionAutomation, InstagramConnectionAutomation>();
         services.AddSingleton<IInstagramExplorerService, InstagramExplorerService>();
         services.AddSingleton<IInstagramInspectionProvider, MockInstagramInspectionProvider>();
