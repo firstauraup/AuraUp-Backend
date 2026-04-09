@@ -15,6 +15,8 @@ public sealed class InstagramIntegrationOptions
 
     public string RpaSessionStatePath { get; set; } = "App_Data/instagram-rpa-session.json";
 
+    public string RpaUserDataDirPath { get; set; } = "App_Data/instagram-rpa-profile";
+
     public bool RpaHeadless { get; set; } = true;
 
     public int RpaMaxPosts { get; set; } = 0;

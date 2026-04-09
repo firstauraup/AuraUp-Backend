@@ -2,11 +2,14 @@ using Microsoft.Playwright;
 
 var options = SessionToolOptions.Parse(args);
 var outputPath = Path.GetFullPath(options.OutputPath, Directory.GetCurrentDirectory());
+var userDataDirPath = Path.GetFullPath(options.UserDataDirPath, Directory.GetCurrentDirectory());
 
 Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? Directory.GetCurrentDirectory());
+Directory.CreateDirectory(userDataDirPath);
 
 Console.WriteLine("AuraUpBack Instagram session tool");
 Console.WriteLine($"Output file: {outputPath}");
+Console.WriteLine($"User data dir: {userDataDirPath}");
 Console.WriteLine($"Headless: {options.Headless}");
 Console.WriteLine();
 Console.WriteLine("This tool will open Instagram in a real browser window.");
@@ -14,22 +17,25 @@ Console.WriteLine("Log in manually, finish any checkpoint or 2FA, then come back
 Console.WriteLine();
 
 using var playwright = await Playwright.CreateAsync();
-await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+await using var context = await playwright.Chromium.LaunchPersistentContextAsync(userDataDirPath, new BrowserTypeLaunchPersistentContextOptions
 {
     Headless = options.Headless,
-    SlowMo = options.Headless ? 0 : 75
-});
-
-await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
-{
+    SlowMo = options.Headless ? 0 : 75,
     ViewportSize = new ViewportSize
     {
         Width = 1440,
         Height = 980
-    }
+    },
+    ChromiumSandbox = false,
+    Args =
+    [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage"
+    ]
 });
 
-var page = await context.NewPageAsync();
+var page = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
 await page.GotoAsync("https://www.instagram.com/accounts/login/", new PageGotoOptions
 {
     WaitUntil = WaitUntilState.DOMContentLoaded,
@@ -49,17 +55,20 @@ var cookies = await context.CookiesAsync();
 Console.WriteLine();
 Console.WriteLine($"Session saved to: {outputPath}");
 Console.WriteLine($"Cookies stored: {cookies.Count}");
-Console.WriteLine("Next step: set Instagram__Provider=Rpa and use this file as Instagram__RpaSessionStatePath.");
+Console.WriteLine("Next step: persist both the user data dir and the exported storage state in your environment.");
 
 internal sealed class SessionToolOptions
 {
     public string OutputPath { get; init; } = "App_Data/instagram-rpa-session.json";
+
+    public string UserDataDirPath { get; init; } = "App_Data/instagram-rpa-profile";
 
     public bool Headless { get; init; }
 
     public static SessionToolOptions Parse(string[] args)
     {
         string? outputPath = null;
+        string? userDataDirPath = null;
         bool headless = false;
 
         for (var index = 0; index < args.Length; index++)
@@ -72,6 +81,12 @@ internal sealed class SessionToolOptions
                 continue;
             }
 
+            if (argument.Equals("--user-data-dir", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
+            {
+                userDataDirPath = args[++index];
+                continue;
+            }
+
             if (argument.Equals("--headless", StringComparison.OrdinalIgnoreCase))
             {
                 headless = true;
@@ -81,6 +96,7 @@ internal sealed class SessionToolOptions
         return new SessionToolOptions
         {
             OutputPath = string.IsNullOrWhiteSpace(outputPath) ? "App_Data/instagram-rpa-session.json" : outputPath,
+            UserDataDirPath = string.IsNullOrWhiteSpace(userDataDirPath) ? "App_Data/instagram-rpa-profile" : userDataDirPath,
             Headless = headless
         };
     }
