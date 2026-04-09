@@ -62,10 +62,12 @@ Console.WriteLine($"Cookies stored: {cookies.Count}");
 
 if (options.ShouldUpload)
 {
+    Console.WriteLine("Authenticating against backend...");
     var backendToken = string.IsNullOrWhiteSpace(options.BackendToken)
         ? await LoginBackendAsync(options)
         : options.BackendToken.Trim();
 
+    Console.WriteLine("Uploading session state to backend...");
     await UploadSessionPackageAsync(options, backendToken, outputPath);
     Console.WriteLine("Session state uploaded to the backend.");
 }

@@ -94,14 +94,14 @@ internal sealed class InstagramConnectionAutomation(
             var sessionStatePath = ResolveSessionStatePath(connection);
             connection.SessionStatePath = sessionStatePath;
 
-            if (await ImportedSessionLooksUsableAsync(sessionStatePath, cancellationToken))
+            if (HasInstagramSessionCookies(sessionStatePath))
             {
                 connection.MarkConnected(DateTime.UtcNow);
             }
             else
             {
                 connection.MarkReconnectRequired(
-                    "The uploaded Instagram session could not be validated. Run the local renewal flow again after finishing captcha or verification.",
+                    "The uploaded Instagram session does not contain the required Instagram cookies. Run the local renewal flow again after finishing captcha or verification.",
                     DateTime.UtcNow);
             }
 
@@ -605,16 +605,6 @@ internal sealed class InstagramConnectionAutomation(
         {
             return false;
         }
-    }
-
-    private async Task<bool> ImportedSessionLooksUsableAsync(string sessionStatePath, CancellationToken cancellationToken)
-    {
-        if (await SessionLooksValidAsync(sessionStatePath, cancellationToken))
-        {
-            return true;
-        }
-
-        return HasInstagramSessionCookies(sessionStatePath);
     }
 
     private static bool HasInstagramSessionCookies(string sessionStatePath)
