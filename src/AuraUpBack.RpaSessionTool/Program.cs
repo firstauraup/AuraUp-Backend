@@ -58,8 +58,9 @@ await context.StorageStateAsync(new BrowserContextStorageStateOptions
     Path = outputPath
 });
 
-CreateProfileArchive(userDataDirPath, profileArchivePath);
 var cookies = await context.CookiesAsync();
+await context.CloseAsync();
+CreateProfileArchive(userDataDirPath, profileArchivePath);
 
 Console.WriteLine();
 Console.WriteLine($"Session saved to: {outputPath}");
@@ -103,7 +104,19 @@ static void CreateProfileArchive(string userDataDirPath, string profileArchivePa
     foreach (var filePath in EnumerateProfileFiles(userDataDirPath, excludedDirectories))
     {
         var relativePath = Path.GetRelativePath(userDataDirPath, filePath);
-        archive.CreateEntryFromFile(filePath, relativePath, CompressionLevel.Fastest);
+        try
+        {
+            archive.CreateEntryFromFile(filePath, relativePath, CompressionLevel.Fastest);
+        }
+        catch (IOException)
+        {
+            // Chromium can keep transient profile files locked briefly even after close.
+            // Skip them so the session package remains usable.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Skip volatile files that cannot be copied on this platform.
+        }
     }
 }
 
