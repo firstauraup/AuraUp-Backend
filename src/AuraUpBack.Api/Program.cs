@@ -5,6 +5,7 @@ using AuraUpBack.Application.Commands.ConnectInstagramIntegration;
 using AuraUpBack.Application.Commands.CompleteInstagramManualLogin;
 using AuraUpBack.Application.Commands.BackfillTrackedAccountHistory;
 using AuraUpBack.Application.Commands.DeleteTrackedAccount;
+using AuraUpBack.Application.Commands.GenerateViralReelIdeas;
 using AuraUpBack.Application.Commands.InspectTrackedAccount;
 using AuraUpBack.Application.Commands.RegisterTrackedAccount;
 using AuraUpBack.Application.Commands.ReconnectInstagramIntegration;
@@ -855,6 +856,35 @@ app.MapPost("/api/explorations/{requestId:guid}/run", async (
     return Results.Ok(result);
 });
 
+app.MapPost("/api/accounts/{accountId:guid}/ideas/generate", async (
+    HttpContext httpContext,
+    Guid accountId,
+    GenerateViralIdeasRequest request,
+    ICommandDispatcher dispatcher,
+    IAppUserRepository userRepository,
+    CancellationToken cancellationToken) =>
+{
+    var session = httpContext.RequireSession();
+    if (!await session.CanAccessAccountAsync(accountId, userRepository, cancellationToken))
+    {
+        return AuthorizationExtensions.ForbidAction("You do not have access to this account.");
+    }
+
+    if (session.IsClient())
+    {
+        return AuthorizationExtensions.ForbidAction("Clients cannot generate idea sets.");
+    }
+
+    var result = await dispatcher.SendAsync(
+        new GenerateViralReelIdeasCommand(
+            accountId,
+            request.Objective,
+            request.SelectedPostIds ?? []),
+        cancellationToken);
+
+    return Results.Ok(result);
+});
+
 static async Task<AuraUpBack.Application.Contracts.TrackedAccountOverviewDto> ToClientOverviewDtoAsync(
     AuraUpBack.Application.Contracts.TrackedAccountOverviewDto overview,
     IMediaAssetStorage mediaAssetStorage,
@@ -1073,6 +1103,10 @@ public sealed record CreateExplorationRequestRequest(
     string AccountHandle,
     string ResearchPrompt,
     IReadOnlyCollection<string>? SelectedPostExternalIds);
+
+public sealed record GenerateViralIdeasRequest(
+    string Objective,
+    IReadOnlyCollection<Guid>? SelectedPostIds);
 
 public sealed record BackfillTrackedAccountHistoryRequest(
     int BatchSize = 12,

@@ -4,6 +4,7 @@ using AuraUpBack.Application.Commands.ConnectInstagramIntegration;
 using AuraUpBack.Application.Commands.CompleteInstagramManualLogin;
 using AuraUpBack.Application.Commands.BackfillTrackedAccountHistory;
 using AuraUpBack.Application.Commands.DeleteTrackedAccount;
+using AuraUpBack.Application.Commands.GenerateViralReelIdeas;
 using AuraUpBack.Application.Commands.InspectTrackedAccount;
 using AuraUpBack.Application.Commands.RegisterTrackedAccount;
 using AuraUpBack.Application.Commands.ReconnectInstagramIntegration;
@@ -33,6 +34,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICommandHandler<CompleteInstagramManualLoginCommand, Contracts.InstagramIntegrationDto>, CompleteInstagramManualLoginCommandHandler>();
         services.AddSingleton<ICommandHandler<BackfillTrackedAccountHistoryCommand, Contracts.BackfillTrackedAccountHistoryDto>, BackfillTrackedAccountHistoryCommandHandler>();
         services.AddSingleton<ICommandHandler<DeleteTrackedAccountCommand, bool>, DeleteTrackedAccountCommandHandler>();
+        services.AddSingleton<ICommandHandler<GenerateViralReelIdeasCommand, Contracts.ViralIdeaGenerationResultDto>, GenerateViralReelIdeasCommandHandler>();
         services.AddSingleton<ICommandHandler<RegisterTrackedAccountCommand, Contracts.TrackedAccountOverviewDto>, RegisterTrackedAccountCommandHandler>();
         services.AddSingleton<ICommandHandler<InspectTrackedAccountCommand, Contracts.TrackedAccountOverviewDto>, InspectTrackedAccountCommandHandler>();
         services.AddSingleton<ICommandHandler<ReconnectInstagramIntegrationCommand, Contracts.InstagramIntegrationDto>, ReconnectInstagramIntegrationCommandHandler>();

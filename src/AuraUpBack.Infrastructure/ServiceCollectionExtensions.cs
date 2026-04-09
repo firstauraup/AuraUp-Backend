@@ -22,6 +22,7 @@ public static class ServiceCollectionExtensions
         services.Configure<AuraUpBackStorageOptions>(configuration.GetSection(AuraUpBackStorageOptions.SectionName));
         services.Configure<InstagramIntegrationOptions>(configuration.GetSection(InstagramIntegrationOptions.SectionName));
         services.Configure<TranscriptionOptions>(configuration.GetSection(TranscriptionOptions.SectionName));
+        services.Configure<AnthropicOptions>(configuration.GetSection(AnthropicOptions.SectionName));
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(MinioMediaOptions.FromConfiguration(configuration)));
         services.AddMemoryCache();
 
@@ -55,6 +56,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IInstagramInspectionProvider, ApifyInstagramInspectionProvider>();
         services.AddSingleton<IInstagramInspectionProvider, RpaInstagramInspectionProvider>();
         services.AddSingleton<IInstagramResearchAutomation, InstagramResearchAutomation>();
+        services.AddSingleton<IViralIdeaGenerationService, AnthropicViralIdeaGenerationService>();
         services.AddSingleton<IVideoTranscriptionService, ClipTranscribeVideoTranscriptionService>();
 
         if (enableMonitoringService)
