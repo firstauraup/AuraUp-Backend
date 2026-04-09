@@ -46,6 +46,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<InspectionJobRunner>();
         services.AddHostedService<InspectionJobBackgroundService>();
         services.AddHttpClient();
+        services.AddHttpClient(nameof(AnthropicViralIdeaGenerationService), client =>
+        {
+            client.Timeout = Timeout.InfiniteTimeSpan;
+        });
         services.AddSingleton<IInstagramCredentialVault, InstagramCredentialVault>();
         services.AddSingleton<IInstagramSettingsService, InstagramSettingsService>();
         services.AddSingleton<IMediaAssetStorage, MinioMediaStorage>();

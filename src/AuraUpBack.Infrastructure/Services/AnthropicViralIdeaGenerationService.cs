@@ -26,38 +26,214 @@ internal sealed class AnthropicViralIdeaGenerationService(
         ViralIdeaGenerationRequest request,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(_options.ApiKey))
+        using var timeoutCts = CreateTimeoutToken(cancellationToken);
+        var prompt = BuildPrompt(request);
+        var payload = CreateRequestPayload(prompt, stream: false);
+        var responseText = await SendJsonRequestAsync(payload, timeoutCts.Token);
+        return ParseIdeasFromResponseText(responseText);
+    }
+
+    public async Task StreamIdeasAsync(
+        ViralIdeaGenerationRequest request,
+        Func<ViralIdeaGenerationStreamEvent, Task> onEvent,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(onEvent);
+
+        EnsureConfigured();
+
+        using var timeoutCts = CreateTimeoutToken(cancellationToken);
+        var prompt = BuildPrompt(request);
+        var payload = CreateRequestPayload(prompt, stream: true);
+        var httpClient = httpClientFactory.CreateClient(nameof(AnthropicViralIdeaGenerationService));
+        using var httpRequest = CreateHttpRequest(payload, accept: "text/event-stream");
+
+        logger.LogInformation(
+            "Streaming viral reel ideas for @{Handle} from {SourceCount} reels",
+            request.AccountHandle,
+            request.SourceReels.Count);
+
+        using var response = await httpClient.SendAsync(
+            httpRequest,
+            HttpCompletionOption.ResponseHeadersRead,
+            timeoutCts.Token);
+
+        if (!response.IsSuccessStatusCode)
         {
-            throw new InvalidOperationException("Anthropic API key is not configured. Set Anthropic__ApiKey in the environment.");
+            var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+            throw new InvalidOperationException(
+                $"Anthropic stream request failed with status {(int)response.StatusCode}: {errorBody}");
         }
 
-        var prompt = BuildPrompt(request);
-        var payload = new AnthropicMessagesRequest(
+        await using var stream = await response.Content.ReadAsStreamAsync(timeoutCts.Token);
+        using var reader = new StreamReader(stream);
+        var currentEvent = string.Empty;
+        var currentData = new StringBuilder();
+        var outputBuffer = new StringBuilder();
+
+        while (!reader.EndOfStream)
+        {
+            timeoutCts.Token.ThrowIfCancellationRequested();
+
+            var line = await reader.ReadLineAsync(timeoutCts.Token) ?? string.Empty;
+            if (string.IsNullOrEmpty(line))
+            {
+                await ProcessStreamFrameAsync(currentEvent, currentData.ToString(), outputBuffer, onEvent);
+                currentEvent = string.Empty;
+                currentData.Clear();
+                continue;
+            }
+
+            if (line.StartsWith("event:", StringComparison.OrdinalIgnoreCase))
+            {
+                currentEvent = line["event:".Length..].Trim();
+                continue;
+            }
+
+            if (line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                if (currentData.Length > 0)
+                {
+                    currentData.Append('\n');
+                }
+
+                currentData.Append(line["data:".Length..].Trim());
+            }
+        }
+
+        await ProcessStreamFrameAsync(currentEvent, currentData.ToString(), outputBuffer, onEvent);
+
+        var ideas = ParseIdeasFromGeneratedText(outputBuffer.ToString());
+        await onEvent(new ViralIdeaGenerationStreamEvent("completed", string.Empty, ideas));
+    }
+
+    private async Task<string> SendJsonRequestAsync(
+        AnthropicMessagesRequest payload,
+        CancellationToken cancellationToken)
+    {
+        EnsureConfigured();
+
+        var httpClient = httpClientFactory.CreateClient(nameof(AnthropicViralIdeaGenerationService));
+        using var httpRequest = CreateHttpRequest(payload, accept: "application/json");
+
+        logger.LogInformation(
+            "Generating viral reel ideas for prompt with {Model} and timeout {TimeoutSeconds}s",
+            _options.Model,
+            _options.RequestTimeoutSeconds);
+
+        try
+        {
+            using var response = await httpClient.SendAsync(httpRequest, cancellationToken);
+            var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    $"Anthropic request failed with status {(int)response.StatusCode}: {responseText}");
+            }
+
+            return responseText;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException(
+                $"Anthropic request timed out after {_options.RequestTimeoutSeconds} seconds.");
+        }
+    }
+
+    private HttpRequestMessage CreateHttpRequest(AnthropicMessagesRequest payload, string accept)
+    {
+        var httpRequest = new HttpRequestMessage(HttpMethod.Post, _options.BaseUrl)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json")
+        };
+
+        httpRequest.Headers.Add("x-api-key", _options.ApiKey);
+        httpRequest.Headers.Add("anthropic-version", "2023-06-01");
+        httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(accept));
+        return httpRequest;
+    }
+
+    private AnthropicMessagesRequest CreateRequestPayload(string prompt, bool stream)
+    {
+        return new AnthropicMessagesRequest(
             _options.Model,
             Math.Max(4096, _options.MaxTokens),
             [
                 new AnthropicMessage("user", prompt)
-            ]);
+            ],
+            stream);
+    }
 
-        var httpClient = httpClientFactory.CreateClient(nameof(AnthropicViralIdeaGenerationService));
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _options.BaseUrl)
+    private CancellationTokenSource CreateTimeoutToken(CancellationToken cancellationToken)
+    {
+        var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(30, _options.RequestTimeoutSeconds)));
+        return timeoutCts;
+    }
+
+    private void EnsureConfigured()
+    {
+        if (string.IsNullOrWhiteSpace(_options.ApiKey))
         {
-            Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json")
-        };
-        httpRequest.Headers.Add("x-api-key", _options.ApiKey);
-        httpRequest.Headers.Add("anthropic-version", "2023-06-01");
-        httpRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            throw new InvalidOperationException("Anthropic API key is not configured. Set Anthropic__ApiKey in the environment.");
+        }
+    }
 
-        logger.LogInformation("Generating viral reel ideas for @{Handle} from {SourceCount} reels", request.AccountHandle, request.SourceReels.Count);
-
-        using var response = await httpClient.SendAsync(httpRequest, cancellationToken);
-        var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
+    private async Task ProcessStreamFrameAsync(
+        string eventName,
+        string data,
+        StringBuilder outputBuffer,
+        Func<ViralIdeaGenerationStreamEvent, Task> onEvent)
+    {
+        if (string.IsNullOrWhiteSpace(data))
         {
-            throw new InvalidOperationException(
-                $"Anthropic request failed with status {(int)response.StatusCode}: {responseText}");
+            return;
         }
 
+        if (string.Equals(data, "[DONE]", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        AnthropicStreamEnvelope? envelope;
+        try
+        {
+            envelope = JsonSerializer.Deserialize<AnthropicStreamEnvelope>(data, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return;
+        }
+
+        if (envelope is null)
+        {
+            return;
+        }
+
+        if (string.Equals(envelope.Type, "error", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                envelope.Error?.Message?.Trim() ?? "Anthropic stream returned an error.");
+        }
+
+        if (!string.Equals(eventName, "content_block_delta", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(envelope.Type, "content_block_delta", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var deltaText = envelope.Delta?.Text?.TrimEnd('\r', '\n');
+        if (string.IsNullOrEmpty(deltaText))
+        {
+            return;
+        }
+
+        outputBuffer.Append(deltaText);
+        await onEvent(new ViralIdeaGenerationStreamEvent("delta", deltaText, null));
+    }
+
+    private IReadOnlyCollection<ViralReelIdea> ParseIdeasFromResponseText(string responseText)
+    {
         var anthropicResponse = JsonSerializer.Deserialize<AnthropicMessagesResponse>(responseText, JsonOptions)
             ?? throw new InvalidOperationException("Anthropic returned an empty response.");
 
@@ -68,7 +244,12 @@ internal sealed class AnthropicViralIdeaGenerationService(
                 .Select(item => item.Text?.Trim())
                 .Where(textItem => !string.IsNullOrWhiteSpace(textItem)));
 
-        var jsonPayload = ExtractJsonPayload(text);
+        return ParseIdeasFromGeneratedText(text);
+    }
+
+    private IReadOnlyCollection<ViralReelIdea> ParseIdeasFromGeneratedText(string generatedText)
+    {
+        var jsonPayload = ExtractJsonPayload(generatedText);
         var parsed = JsonSerializer.Deserialize<ViralIdeaResponseEnvelope>(jsonPayload, JsonOptions)
             ?? throw new InvalidOperationException("Anthropic returned invalid idea JSON.");
 
@@ -76,13 +257,14 @@ internal sealed class AnthropicViralIdeaGenerationService(
             .Where(idea => !string.IsNullOrWhiteSpace(idea.Title))
             .Select((idea, index) => new ViralReelIdea(
                 idea.Rank > 0 ? idea.Rank : index + 1,
-                idea.Title.Trim(),
-                idea.Hook.Trim(),
-                idea.Premise.Trim(),
-                idea.Format.Trim(),
-                idea.WhyItCouldWork.Trim(),
-                idea.SourceReels.Trim(),
+                (idea.Title ?? string.Empty).Trim(),
+                (idea.Hook ?? string.Empty).Trim(),
+                (idea.Premise ?? string.Empty).Trim(),
+                (idea.Format ?? string.Empty).Trim(),
+                (idea.WhyItCouldWork ?? string.Empty).Trim(),
+                (idea.SourceReels ?? string.Empty).Trim(),
                 Math.Clamp(idea.Confidence, 1, 100)))
+            .Where(idea => !string.IsNullOrWhiteSpace(idea.Title))
             .OrderBy(idea => idea.Rank)
             .ToList();
 
@@ -170,7 +352,8 @@ internal sealed class AnthropicViralIdeaGenerationService(
     private sealed record AnthropicMessagesRequest(
         [property: JsonPropertyName("model")] string Model,
         [property: JsonPropertyName("max_tokens")] int MaxTokens,
-        [property: JsonPropertyName("messages")] IReadOnlyCollection<AnthropicMessage> Messages);
+        [property: JsonPropertyName("messages")] IReadOnlyCollection<AnthropicMessage> Messages,
+        [property: JsonPropertyName("stream")] bool Stream);
 
     private sealed record AnthropicMessage(
         [property: JsonPropertyName("role")] string Role,
@@ -182,6 +365,17 @@ internal sealed class AnthropicViralIdeaGenerationService(
     private sealed record AnthropicContentBlock(
         [property: JsonPropertyName("type")] string Type,
         [property: JsonPropertyName("text")] string? Text);
+
+    private sealed record AnthropicStreamEnvelope(
+        [property: JsonPropertyName("type")] string Type,
+        [property: JsonPropertyName("delta")] AnthropicStreamDelta? Delta,
+        [property: JsonPropertyName("error")] AnthropicStreamError? Error);
+
+    private sealed record AnthropicStreamDelta(
+        [property: JsonPropertyName("text")] string? Text);
+
+    private sealed record AnthropicStreamError(
+        [property: JsonPropertyName("message")] string? Message);
 
     private sealed record ViralIdeaResponseEnvelope(
         [property: JsonPropertyName("ideas")] IReadOnlyCollection<ViralIdeaItem> Ideas);

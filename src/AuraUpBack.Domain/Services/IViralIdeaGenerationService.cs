@@ -5,6 +5,11 @@ public interface IViralIdeaGenerationService
     Task<IReadOnlyCollection<ViralReelIdea>> GenerateIdeasAsync(
         ViralIdeaGenerationRequest request,
         CancellationToken cancellationToken);
+
+    Task StreamIdeasAsync(
+        ViralIdeaGenerationRequest request,
+        Func<ViralIdeaGenerationStreamEvent, Task> onEvent,
+        CancellationToken cancellationToken);
 }
 
 public sealed record ViralIdeaGenerationRequest(
@@ -36,3 +41,8 @@ public sealed record ViralReelIdea(
     string WhyItCouldWork,
     string SourceReels,
     int Confidence);
+
+public sealed record ViralIdeaGenerationStreamEvent(
+    string Type,
+    string Delta,
+    IReadOnlyCollection<ViralReelIdea>? Ideas);

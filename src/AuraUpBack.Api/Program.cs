@@ -885,6 +885,100 @@ app.MapPost("/api/accounts/{accountId:guid}/ideas/generate", async (
     return Results.Ok(result);
 });
 
+app.MapPost("/api/accounts/{accountId:guid}/ideas/generate/stream", async (
+    HttpContext httpContext,
+    Guid accountId,
+    GenerateViralIdeasRequest request,
+    IViralIdeaGenerationService viralIdeaGenerationService,
+    ITrackedAccountRepository trackedAccountRepository,
+    IAppUserRepository userRepository,
+    CancellationToken cancellationToken) =>
+{
+    var session = httpContext.RequireSession();
+    if (!await session.CanAccessAccountAsync(accountId, userRepository, cancellationToken))
+    {
+        httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await httpContext.Response.WriteAsJsonAsync(new
+        {
+            message = "You do not have access to this account."
+        }, cancellationToken);
+        return;
+    }
+
+    if (session.IsClient())
+    {
+        httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await httpContext.Response.WriteAsJsonAsync(new
+        {
+            message = "Clients cannot generate idea sets."
+        }, cancellationToken);
+        return;
+    }
+
+    var preparation = await PrepareViralIdeaGenerationAsync(
+        accountId,
+        request,
+        trackedAccountRepository,
+        cancellationToken);
+
+    httpContext.Response.StatusCode = StatusCodes.Status200OK;
+    httpContext.Response.ContentType = "text/event-stream";
+    httpContext.Response.Headers.CacheControl = "no-cache";
+    httpContext.Response.Headers.Append("X-Accel-Buffering", "no");
+
+    try
+    {
+        await viralIdeaGenerationService.StreamIdeasAsync(
+            preparation.Request,
+            async streamEvent =>
+            {
+                if (streamEvent.Type == "delta")
+                {
+                    await WriteSseEventAsync(httpContext, new
+                    {
+                        type = "delta",
+                        delta = streamEvent.Delta
+                    }, cancellationToken);
+                    return;
+                }
+
+                if (streamEvent.Type == "completed" && streamEvent.Ideas is not null)
+                {
+                    var result = new AuraUpBack.Application.Contracts.ViralIdeaGenerationResultDto(
+                        preparation.AccountId,
+                        preparation.AccountHandle,
+                        preparation.Objective,
+                        streamEvent.Ideas.Count,
+                        DateTime.UtcNow,
+                        streamEvent.Ideas.Select(idea => new AuraUpBack.Application.Contracts.ViralReelIdeaDto(
+                            idea.Rank,
+                            idea.Title,
+                            idea.Hook,
+                            idea.Premise,
+                            idea.Format,
+                            idea.WhyItCouldWork,
+                            idea.SourceReels,
+                            idea.Confidence)).ToList());
+
+                    await WriteSseEventAsync(httpContext, new
+                    {
+                        type = "completed",
+                        result
+                    }, cancellationToken);
+                }
+            },
+            cancellationToken);
+    }
+    catch (Exception exception)
+    {
+        await WriteSseEventAsync(httpContext, new
+        {
+            type = "error",
+            message = exception.Message
+        }, cancellationToken);
+    }
+});
+
 static async Task<AuraUpBack.Application.Contracts.TrackedAccountOverviewDto> ToClientOverviewDtoAsync(
     AuraUpBack.Application.Contracts.TrackedAccountOverviewDto overview,
     IMediaAssetStorage mediaAssetStorage,
@@ -944,6 +1038,85 @@ static async Task<AuraUpBack.Application.Contracts.TrackedAccountOverviewDto> To
         overview.LastResearchSummary,
         overview.LastInspectedAtUtc,
         posts);
+}
+
+static async Task WriteSseEventAsync(HttpContext httpContext, object payload, CancellationToken cancellationToken)
+{
+    var json = System.Text.Json.JsonSerializer.Serialize(payload);
+    await httpContext.Response.WriteAsync($"data: {json}\n\n", cancellationToken);
+    await httpContext.Response.Body.FlushAsync(cancellationToken);
+}
+
+static async Task<ViralIdeaGenerationPreparation> PrepareViralIdeaGenerationAsync(
+    Guid accountId,
+    GenerateViralIdeasRequest request,
+    ITrackedAccountRepository trackedAccountRepository,
+    CancellationToken cancellationToken)
+{
+    var account = await trackedAccountRepository.GetByIdAsync(accountId, cancellationToken)
+        ?? throw new InvalidOperationException("Tracked account was not found.");
+
+    var selectedPostIds = (request.SelectedPostIds ?? [])
+        .Where(id => id != Guid.Empty)
+        .Distinct()
+        .ToHashSet();
+
+    if (selectedPostIds.Count == 0)
+    {
+        throw new InvalidOperationException("Select at least one reel before generating ideas.");
+    }
+
+    var selectedReels = account.Posts
+        .Where(post => selectedPostIds.Contains(post.Id))
+        .OrderByDescending(post => post.PerformanceMultiplier)
+        .ThenByDescending(post => post.Views)
+        .ToList();
+
+    if (selectedReels.Count == 0)
+    {
+        throw new InvalidOperationException("The selected reels were not found on this account.");
+    }
+
+    if (selectedReels.Any(post => string.IsNullOrWhiteSpace(post.Transcript)))
+    {
+        throw new InvalidOperationException("All selected reels must have a transcript before generating ideas.");
+    }
+
+    var normalizedObjective = (request.Objective ?? string.Empty).Trim();
+    var sourceReels = selectedReels.Select(post => new ViralIdeaSourceReel(
+        post.ExternalId,
+        BuildViralIdeaSourceTitle(post.Caption, post.ExternalId),
+        post.Caption,
+        post.Transcript ?? string.Empty,
+        post.Views,
+        post.Likes,
+        post.Comments,
+        post.Shares,
+        post.PerformanceMultiplier,
+        post.Topic,
+        post.HookStyle,
+        post.ContentAngle,
+        post.ThemeSummary)).ToList();
+
+    return new ViralIdeaGenerationPreparation(
+        account.Id,
+        account.Handle,
+        normalizedObjective,
+        new ViralIdeaGenerationRequest(
+            account.Handle,
+            normalizedObjective,
+            sourceReels));
+}
+
+static string BuildViralIdeaSourceTitle(string caption, string externalId)
+{
+    if (string.IsNullOrWhiteSpace(caption))
+    {
+        return externalId;
+    }
+
+    var normalized = caption.Trim();
+    return normalized.Length <= 72 ? normalized : $"{normalized[..72].TrimEnd()}...";
 }
 
 static async Task<AuraUpBack.Application.Contracts.WatchlistDashboardDto> ToClientWatchlistDashboardDtoAsync(
@@ -1107,6 +1280,12 @@ public sealed record CreateExplorationRequestRequest(
 public sealed record GenerateViralIdeasRequest(
     string Objective,
     IReadOnlyCollection<Guid>? SelectedPostIds);
+
+public sealed record ViralIdeaGenerationPreparation(
+    Guid AccountId,
+    string AccountHandle,
+    string Objective,
+    ViralIdeaGenerationRequest Request);
 
 public sealed record BackfillTrackedAccountHistoryRequest(
     int BatchSize = 12,
