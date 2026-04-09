@@ -69,6 +69,55 @@ internal sealed class InstagramConnectionAutomation(
         return await LoginAsync(connection, password, cancellationToken);
     }
 
+    public async Task<InstagramConnectionState> ImportSessionPackageAsync(
+        Stream sessionStateStream,
+        Stream? profileArchiveStream,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(sessionStateStream);
+
+        var connection = await instagramConnectionRepository.GetActiveAsync(cancellationToken)
+            ?? throw new InvalidOperationException("No Instagram connection has been configured yet.");
+
+        await _manualLoginGate.WaitAsync(cancellationToken);
+
+        try
+        {
+            await DisposeManualLoginSessionAsync();
+
+            await using (await browserProfileService.AcquireExclusiveAccessAsync(cancellationToken))
+            {
+                if (profileArchiveStream is not null)
+                {
+                    await browserProfileService.ReplaceProfileFromArchiveAsync(profileArchiveStream, cancellationToken);
+                }
+
+                await browserProfileService.WriteSessionStateAsync(sessionStateStream, cancellationToken);
+            }
+
+            var sessionStatePath = ResolveSessionStatePath(connection);
+            connection.SessionStatePath = sessionStatePath;
+
+            if (await SessionLooksValidAsync(sessionStatePath, cancellationToken))
+            {
+                connection.MarkConnected(DateTime.UtcNow);
+            }
+            else
+            {
+                connection.MarkReconnectRequired(
+                    "The uploaded Instagram session could not be validated. Run the local renewal flow again after finishing captcha or verification.",
+                    DateTime.UtcNow);
+            }
+
+            await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
+            return ToState(connection);
+        }
+        finally
+        {
+            _manualLoginGate.Release();
+        }
+    }
+
     public async Task<InstagramConnectionState> StartManualLoginAsync(CancellationToken cancellationToken)
     {
         var connection = await instagramConnectionRepository.GetActiveAsync(cancellationToken)
@@ -373,8 +422,45 @@ internal sealed class InstagramConnectionAutomation(
             });
 
             await DismissCookiePromptAsync(page);
-            var usernameInput = await ResolveUsernameInputAsync(page);
-            var passwordInput = await ResolvePasswordInputAsync(page);
+            var initialOutcome = await ResolveLoginOutcomeAsync(page, cancellationToken);
+            if (initialOutcome == InstagramLoginOutcome.Authenticated)
+            {
+                await EnsureAuthenticatedSessionAsync(page, cancellationToken);
+                await InstagramBrowserProfileService.ExportSessionStateAsync(context, connection.SessionStatePath);
+
+                connection.MarkConnected(DateTime.UtcNow);
+                await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
+                logger.LogInformation("Instagram session was already authenticated for @{Username}", connection.Username);
+                return ToState(connection);
+            }
+
+            if (initialOutcome == InstagramLoginOutcome.VerificationRequired)
+            {
+                return await HandleManualRenewalRequiredAsync(
+                    connection,
+                    page,
+                    context,
+                    cancellationToken,
+                    "Instagram requires manual verification. Renew the session locally and upload it to the backend.");
+            }
+
+            ILocator usernameInput;
+            ILocator passwordInput;
+
+            try
+            {
+                usernameInput = await ResolveUsernameInputAsync(page);
+                passwordInput = await ResolvePasswordInputAsync(page);
+            }
+            catch (InvalidOperationException) when (_options.RpaHeadless)
+            {
+                return await HandleManualRenewalRequiredAsync(
+                    connection,
+                    page,
+                    context,
+                    cancellationToken,
+                    "Instagram did not show the standard login form. Renew the session locally and upload it to the backend after captcha or verification.");
+            }
 
             await EnterTextReliablyAsync(usernameInput, connection.Username);
             await EnterTextReliablyAsync(passwordInput, password);
@@ -398,14 +484,14 @@ internal sealed class InstagramConnectionAutomation(
 
             if (loginOutcome == InstagramLoginOutcome.VerificationRequired)
             {
-                await InstagramBrowserProfileService.ExportSessionStateAsync(context, connection.SessionStatePath);
-
-                connection.MarkVerificationRequired(
-                    "Instagram requires manual verification. Complete the captcha or code challenge in the opened browser window, then retry if needed.",
-                    page.Url,
-                    DateTime.UtcNow);
-                await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
-                return ToState(connection);
+                return await HandleManualRenewalRequiredAsync(
+                    connection,
+                    page,
+                    context,
+                    cancellationToken,
+                    _options.RpaHeadless
+                        ? "Instagram requires manual verification. Renew the session locally and upload it to the backend."
+                        : "Instagram requires manual verification. Complete the captcha or code challenge in the opened browser window, then retry if needed.");
             }
 
             if (loginOutcome == InstagramLoginOutcome.InvalidCredentials)
@@ -523,6 +609,28 @@ internal sealed class InstagramConnectionAutomation(
         {
             return false;
         }
+    }
+
+    private async Task<InstagramConnectionState> HandleManualRenewalRequiredAsync(
+        InstagramConnection connection,
+        IPage page,
+        IBrowserContext context,
+        CancellationToken cancellationToken,
+        string message)
+    {
+        await InstagramBrowserProfileService.ExportSessionStateAsync(context, connection.SessionStatePath);
+
+        if (_options.RpaHeadless)
+        {
+            connection.MarkReconnectRequired(message, DateTime.UtcNow);
+        }
+        else
+        {
+            connection.MarkVerificationRequired(message, page.Url, DateTime.UtcNow);
+        }
+
+        await instagramConnectionRepository.UpsertAsync(connection, cancellationToken);
+        return ToState(connection);
     }
 
     private static async Task DismissCookiePromptAsync(IPage page)

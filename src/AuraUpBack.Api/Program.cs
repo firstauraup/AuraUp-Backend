@@ -28,6 +28,7 @@ using AuraUpBack.Infrastructure.Options;
 using AuraUpBack.Infrastructure.Services;
 using AuraUpBack.Domain.Enums;
 using AuraUpBack.Domain.Repositories;
+using AuraUpBack.Domain.Services;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Playwright;
@@ -421,6 +422,56 @@ app.MapPost("/api/integrations/instagram/manual/complete", async (
         return Results.Json(
             new { message = exception.Message },
             statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+app.MapPost("/api/integrations/instagram/session-package", async (
+    HttpContext httpContext,
+    IInstagramConnectionAutomation instagramConnectionAutomation,
+    CancellationToken cancellationToken) =>
+{
+    if (!httpContext.RequireSession().IsAdministrator())
+    {
+        return AuthorizationExtensions.ForbidAction("Only administrators can manage Instagram integration.");
+    }
+
+    var form = await httpContext.Request.ReadFormAsync(cancellationToken);
+    var sessionStateFile = form.Files.GetFile("sessionState");
+    if (sessionStateFile is null || sessionStateFile.Length == 0)
+    {
+        return Results.BadRequest(new { message = "The sessionState file is required." });
+    }
+
+    var profileArchiveFile = form.Files.GetFile("profileArchive");
+
+    try
+    {
+        await using var sessionStateStream = sessionStateFile.OpenReadStream();
+        await using var profileArchiveStream = profileArchiveFile?.OpenReadStream();
+
+        var result = await instagramConnectionAutomation.ImportSessionPackageAsync(
+            sessionStateStream,
+            profileArchiveStream,
+            cancellationToken);
+
+        return Results.Ok(new AuraUpBack.Application.Contracts.InstagramIntegrationDto(
+            result.Provider,
+            result.Username,
+            result.Status.ToString(),
+            result.HasStoredCredentials,
+            result.SessionStatePath,
+            result.SessionStateExists,
+            result.VerificationUrl,
+            result.LastLoginAtUtc,
+            result.LastValidatedAtUtc,
+            result.LastError,
+            result.Headless,
+            result.MaxPosts,
+            result.AllowPublicProfileReadWithoutSession));
+    }
+    catch (InvalidOperationException exception)
+    {
+        return Results.BadRequest(new { message = exception.Message });
     }
 });
 
