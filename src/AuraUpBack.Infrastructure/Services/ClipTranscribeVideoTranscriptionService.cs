@@ -194,9 +194,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 return transcript;
             }
 
-            var bodyText = await TryReadBodyTextAsync(page);
-            if (bodyText.Contains("sign in", StringComparison.OrdinalIgnoreCase) ||
-                bodyText.Contains("log in", StringComparison.OrdinalIgnoreCase))
+            if (await IsAuthenticationWallAsync(page))
             {
                 throw new InvalidOperationException("ClipTranscribe requested authentication before returning a transcript.");
             }
@@ -345,6 +343,65 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         {
             logger.LogWarning(exception, "ClipTranscribe DOM extraction failed while reading transcript output.");
             return null;
+        }
+    }
+
+    private static async Task<bool> IsAuthenticationWallAsync(IPage page)
+    {
+        try
+        {
+            var currentUrl = page.Url ?? string.Empty;
+            if (currentUrl.Contains("/sign-in", StringComparison.OrdinalIgnoreCase) ||
+                currentUrl.Contains("/login", StringComparison.OrdinalIgnoreCase) ||
+                currentUrl.Contains("/auth", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return await page.EvaluateAsync<bool>(
+                """
+                () => {
+                  const visible = (element) => {
+                    if (!element) {
+                      return false;
+                    }
+
+                    const style = window.getComputedStyle(element);
+                    if (style.display === 'none' || style.visibility === 'hidden') {
+                      return false;
+                    }
+
+                    const rect = element.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                  };
+
+                  const passwordField = Array.from(document.querySelectorAll('input[type="password"]'))
+                    .find((element) => visible(element));
+                  if (passwordField) {
+                    return true;
+                  }
+
+                  const authButtons = Array.from(document.querySelectorAll('button, [role="button"], a'))
+                    .filter((element) => visible(element))
+                    .map((element) => (element.textContent || '').trim().toLowerCase())
+                    .filter(Boolean);
+
+                  const bodyText = (document.body?.innerText || '').toLowerCase();
+                  const hasAuthHeading =
+                    bodyText.includes('continue with google') ||
+                    bodyText.includes('continue with email') ||
+                    bodyText.includes('enter your email') ||
+                    bodyText.includes('sign in to continue') ||
+                    bodyText.includes('log in to continue');
+
+                  const signInButtons = authButtons.filter((text) => text === 'sign in' || text === 'log in');
+                  return hasAuthHeading && signInButtons.length > 0;
+                }
+                """);
+        }
+        catch (PlaywrightException)
+        {
+            return false;
         }
     }
 
