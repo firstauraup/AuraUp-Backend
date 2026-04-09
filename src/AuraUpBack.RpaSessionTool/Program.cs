@@ -1,4 +1,3 @@
-using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
@@ -7,16 +6,12 @@ using Microsoft.Playwright;
 var options = SessionToolOptions.Parse(args);
 var outputPath = Path.GetFullPath(options.OutputPath, Directory.GetCurrentDirectory());
 var userDataDirPath = Path.GetFullPath(options.UserDataDirPath, Directory.GetCurrentDirectory());
-var profileArchivePath = Path.GetFullPath(options.ProfileArchivePath, Directory.GetCurrentDirectory());
-
 Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? Directory.GetCurrentDirectory());
 Directory.CreateDirectory(userDataDirPath);
-Directory.CreateDirectory(Path.GetDirectoryName(profileArchivePath) ?? Directory.GetCurrentDirectory());
 
 Console.WriteLine("AuraUpBack Instagram session renewal tool");
 Console.WriteLine($"Output file: {outputPath}");
 Console.WriteLine($"User data dir: {userDataDirPath}");
-Console.WriteLine($"Profile archive: {profileArchivePath}");
 Console.WriteLine($"Headless: {options.Headless}");
 Console.WriteLine();
 Console.WriteLine("This tool opens Instagram in a real browser window.");
@@ -60,11 +55,9 @@ await context.StorageStateAsync(new BrowserContextStorageStateOptions
 
 var cookies = await context.CookiesAsync();
 await context.CloseAsync();
-CreateProfileArchive(userDataDirPath, profileArchivePath);
 
 Console.WriteLine();
 Console.WriteLine($"Session saved to: {outputPath}");
-Console.WriteLine($"Profile archive saved to: {profileArchivePath}");
 Console.WriteLine($"Cookies stored: {cookies.Count}");
 
 if (options.ShouldUpload)
@@ -73,82 +66,12 @@ if (options.ShouldUpload)
         ? await LoginBackendAsync(options)
         : options.BackendToken.Trim();
 
-    await UploadSessionPackageAsync(options, backendToken, outputPath, profileArchivePath);
-    Console.WriteLine("Session package uploaded to the backend.");
+    await UploadSessionPackageAsync(options, backendToken, outputPath);
+    Console.WriteLine("Session state uploaded to the backend.");
 }
 else
 {
     Console.WriteLine("No backend upload configured. Use --api-base-url with either --backend-token or --admin-username/--admin-password to upload automatically.");
-}
-
-static void CreateProfileArchive(string userDataDirPath, string profileArchivePath)
-{
-    if (File.Exists(profileArchivePath))
-    {
-        File.Delete(profileArchivePath);
-    }
-
-    var excludedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-        "Cache",
-        "Code Cache",
-        "GPUCache",
-        "GrShaderCache",
-        "DawnCache",
-        "Crashpad",
-        "BrowserMetrics",
-        "ShaderCache"
-    };
-
-    using var archive = ZipFile.Open(profileArchivePath, ZipArchiveMode.Create);
-    foreach (var filePath in EnumerateProfileFiles(userDataDirPath, excludedDirectories))
-    {
-        var relativePath = Path.GetRelativePath(userDataDirPath, filePath);
-        try
-        {
-            archive.CreateEntryFromFile(filePath, relativePath, CompressionLevel.Fastest);
-        }
-        catch (IOException)
-        {
-            // Chromium can keep transient profile files locked briefly even after close.
-            // Skip them so the session package remains usable.
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // Skip volatile files that cannot be copied on this platform.
-        }
-    }
-}
-
-static IEnumerable<string> EnumerateProfileFiles(string rootDirectory, HashSet<string> excludedDirectories)
-{
-    if (!Directory.Exists(rootDirectory))
-    {
-        yield break;
-    }
-
-    var pendingDirectories = new Stack<string>();
-    pendingDirectories.Push(rootDirectory);
-
-    while (pendingDirectories.Count > 0)
-    {
-        var currentDirectory = pendingDirectories.Pop();
-
-        foreach (var directory in Directory.EnumerateDirectories(currentDirectory))
-        {
-            if (excludedDirectories.Contains(Path.GetFileName(directory)))
-            {
-                continue;
-            }
-
-            pendingDirectories.Push(directory);
-        }
-
-        foreach (var filePath in Directory.EnumerateFiles(currentDirectory))
-        {
-            yield return filePath;
-        }
-    }
 }
 
 static async Task<string> LoginBackendAsync(SessionToolOptions options)
@@ -185,8 +108,7 @@ static async Task<string> LoginBackendAsync(SessionToolOptions options)
 static async Task UploadSessionPackageAsync(
     SessionToolOptions options,
     string backendToken,
-    string sessionStatePath,
-    string profileArchivePath)
+    string sessionStatePath)
 {
     using var httpClient = new HttpClient
     {
@@ -197,15 +119,10 @@ static async Task UploadSessionPackageAsync(
 
     using var form = new MultipartFormDataContent();
     await using var sessionStateStream = File.OpenRead(sessionStatePath);
-    await using var profileArchiveStream = File.OpenRead(profileArchivePath);
 
     var sessionContent = new StreamContent(sessionStateStream);
     sessionContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
     form.Add(sessionContent, "sessionState", Path.GetFileName(sessionStatePath));
-
-    var profileContent = new StreamContent(profileArchiveStream);
-    profileContent.Headers.ContentType = new MediaTypeHeaderValue("application/zip");
-    form.Add(profileContent, "profileArchive", Path.GetFileName(profileArchivePath));
 
     var response = await httpClient.PostAsync("/api/integrations/instagram/session-package", form);
     if (!response.IsSuccessStatusCode)
@@ -226,7 +143,6 @@ internal sealed class SessionToolOptions
 {
     public string OutputPath { get; init; } = "App_Data/instagram-rpa-session.json";
     public string UserDataDirPath { get; init; } = "App_Data/instagram-rpa-profile";
-    public string ProfileArchivePath { get; init; } = "App_Data/instagram-rpa-profile.zip";
     public string ApiBaseUrl { get; init; } = string.Empty;
     public string AdminUsername { get; init; } = string.Empty;
     public string AdminPassword { get; init; } = string.Empty;
@@ -241,7 +157,6 @@ internal sealed class SessionToolOptions
     {
         string? outputPath = null;
         string? userDataDirPath = null;
-        string? profileArchivePath = null;
         string? apiBaseUrl = null;
         string? adminUsername = null;
         string? adminPassword = null;
@@ -261,12 +176,6 @@ internal sealed class SessionToolOptions
             if (argument.Equals("--user-data-dir", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
             {
                 userDataDirPath = args[++index];
-                continue;
-            }
-
-            if (argument.Equals("--profile-archive", StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
-            {
-                profileArchivePath = args[++index];
                 continue;
             }
 
@@ -304,7 +213,6 @@ internal sealed class SessionToolOptions
         {
             OutputPath = string.IsNullOrWhiteSpace(outputPath) ? "App_Data/instagram-rpa-session.json" : outputPath,
             UserDataDirPath = string.IsNullOrWhiteSpace(userDataDirPath) ? "App_Data/instagram-rpa-profile" : userDataDirPath,
-            ProfileArchivePath = string.IsNullOrWhiteSpace(profileArchivePath) ? "App_Data/instagram-rpa-profile.zip" : profileArchivePath,
             ApiBaseUrl = apiBaseUrl ?? string.Empty,
             AdminUsername = adminUsername ?? string.Empty,
             AdminPassword = adminPassword ?? string.Empty,

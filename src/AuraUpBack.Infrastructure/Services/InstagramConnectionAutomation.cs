@@ -88,11 +88,6 @@ internal sealed class InstagramConnectionAutomation(
 
             await using (await browserProfileService.AcquireExclusiveAccessAsync(cancellationToken))
             {
-                if (profileArchiveStream is not null)
-                {
-                    await browserProfileService.ReplaceProfileFromArchiveAsync(profileArchiveStream, cancellationToken);
-                }
-
                 await browserProfileService.WriteSessionStateAsync(sessionStateStream, cancellationToken);
             }
 
