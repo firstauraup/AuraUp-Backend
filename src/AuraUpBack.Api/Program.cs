@@ -1137,7 +1137,7 @@ static async Task<ViralIdeaGenerationPreparation> PrepareViralIdeaGenerationAsyn
     ITrackedAccountRepository trackedAccountRepository,
     CancellationToken cancellationToken)
 {
-    var requestedIdeaCount = Math.Clamp(request.Count.GetValueOrDefault(90), 10, 200);
+    var requestedIdeaCount = Math.Clamp(request.Count.GetValueOrDefault(90), 1, 200);
     var account = await trackedAccountRepository.GetByIdAsync(accountId, cancellationToken)
         ?? throw new InvalidOperationException("Tracked account was not found.");
 
