@@ -27,6 +27,7 @@ using AuraUpBack.Infrastructure;
 using AuraUpBack.Infrastructure.Abstractions;
 using AuraUpBack.Infrastructure.Options;
 using AuraUpBack.Infrastructure.Services;
+using AuraUpBack.Domain.Entities;
 using AuraUpBack.Domain.Enums;
 using AuraUpBack.Domain.Repositories;
 using AuraUpBack.Domain.Services;
@@ -860,7 +861,9 @@ app.MapPost("/api/accounts/{accountId:guid}/ideas/generate", async (
     HttpContext httpContext,
     Guid accountId,
     GenerateViralIdeasRequest request,
-    ICommandDispatcher dispatcher,
+    IViralIdeaGenerationService viralIdeaGenerationService,
+    ITrackedAccountRepository trackedAccountRepository,
+    IViralIdeaBatchRepository viralIdeaBatchRepository,
     IAppUserRepository userRepository,
     CancellationToken cancellationToken) =>
 {
@@ -875,12 +878,24 @@ app.MapPost("/api/accounts/{accountId:guid}/ideas/generate", async (
         return AuthorizationExtensions.ForbidAction("Clients cannot generate idea sets.");
     }
 
-    var result = await dispatcher.SendAsync(
-        new GenerateViralReelIdeasCommand(
-            accountId,
-            request.Objective,
-            request.SelectedPostIds ?? []),
+    var preparation = await PrepareViralIdeaGenerationAsync(
+        accountId,
+        request,
+        trackedAccountRepository,
         cancellationToken);
+
+    var generatedIdeas = await viralIdeaGenerationService.GenerateIdeasAsync(preparation.Request, cancellationToken);
+    var batch = ViralIdeaBatch.Create(
+        preparation.AccountId,
+        preparation.AccountHandle,
+        preparation.Objective,
+        preparation.RequestedIdeaCount,
+        generatedIdeas,
+        DateTime.UtcNow);
+
+    await viralIdeaBatchRepository.UpsertAsync(batch, cancellationToken);
+
+    var result = ToViralIdeaBatchDto(batch);
 
     return Results.Ok(result);
 });
@@ -891,6 +906,7 @@ app.MapPost("/api/accounts/{accountId:guid}/ideas/generate/stream", async (
     GenerateViralIdeasRequest request,
     IViralIdeaGenerationService viralIdeaGenerationService,
     ITrackedAccountRepository trackedAccountRepository,
+    IViralIdeaBatchRepository viralIdeaBatchRepository,
     IAppUserRepository userRepository,
     CancellationToken cancellationToken) =>
 {
@@ -944,21 +960,16 @@ app.MapPost("/api/accounts/{accountId:guid}/ideas/generate/stream", async (
 
                 if (streamEvent.Type == "completed" && streamEvent.Ideas is not null)
                 {
-                    var result = new AuraUpBack.Application.Contracts.ViralIdeaGenerationResultDto(
+                    var batch = ViralIdeaBatch.Create(
                         preparation.AccountId,
                         preparation.AccountHandle,
                         preparation.Objective,
-                        streamEvent.Ideas.Count,
-                        DateTime.UtcNow,
-                        streamEvent.Ideas.Select(idea => new AuraUpBack.Application.Contracts.ViralReelIdeaDto(
-                            idea.Rank,
-                            idea.Title,
-                            idea.Hook,
-                            idea.Premise,
-                            idea.Format,
-                            idea.WhyItCouldWork,
-                            idea.SourceReels,
-                            idea.Confidence)).ToList());
+                        preparation.RequestedIdeaCount,
+                        streamEvent.Ideas,
+                        DateTime.UtcNow);
+
+                    await viralIdeaBatchRepository.UpsertAsync(batch, cancellationToken);
+                    var result = ToViralIdeaBatchDto(batch);
 
                     await WriteSseEventAsync(httpContext, new
                     {
@@ -977,6 +988,79 @@ app.MapPost("/api/accounts/{accountId:guid}/ideas/generate/stream", async (
             message = exception.Message
         }, cancellationToken);
     }
+});
+
+app.MapGet("/api/accounts/{accountId:guid}/ideas", async (
+    HttpContext httpContext,
+    Guid accountId,
+    IViralIdeaBatchRepository viralIdeaBatchRepository,
+    IAppUserRepository userRepository,
+    CancellationToken cancellationToken) =>
+{
+    var session = httpContext.RequireSession();
+    if (!await session.CanAccessAccountAsync(accountId, userRepository, cancellationToken))
+    {
+        return AuthorizationExtensions.ForbidAction("You do not have access to this account.");
+    }
+
+    var batches = await viralIdeaBatchRepository.GetByAccountIdAsync(accountId, cancellationToken);
+    return Results.Ok(batches.Select(batch => ToViralIdeaBatchDto(batch)).ToList());
+});
+
+app.MapPatch("/api/accounts/{accountId:guid}/ideas/{batchId:guid}/items/{ideaId:guid}", async (
+    HttpContext httpContext,
+    Guid accountId,
+    Guid batchId,
+    Guid ideaId,
+    UpdateViralIdeaClassificationRequest request,
+    IViralIdeaBatchRepository viralIdeaBatchRepository,
+    IAppUserRepository userRepository,
+    CancellationToken cancellationToken) =>
+{
+    var session = httpContext.RequireSession();
+    if (!await session.CanAccessAccountAsync(accountId, userRepository, cancellationToken))
+    {
+        return AuthorizationExtensions.ForbidAction("You do not have access to this account.");
+    }
+
+    var batch = await viralIdeaBatchRepository.GetByIdAsync(batchId, cancellationToken);
+    if (batch is null || batch.AccountId != accountId)
+    {
+        return Results.NotFound(new { message = "Idea batch was not found." });
+    }
+
+    batch.ClassifyIdea(ideaId, request.Classification, DateTime.UtcNow);
+    await viralIdeaBatchRepository.UpsertAsync(batch, cancellationToken);
+    return Results.Ok(ToViralIdeaBatchDto(batch));
+});
+
+app.MapDelete("/api/accounts/{accountId:guid}/ideas/{batchId:guid}/trash", async (
+    HttpContext httpContext,
+    Guid accountId,
+    Guid batchId,
+    IViralIdeaBatchRepository viralIdeaBatchRepository,
+    IAppUserRepository userRepository,
+    CancellationToken cancellationToken) =>
+{
+    var session = httpContext.RequireSession();
+    if (!await session.CanAccessAccountAsync(accountId, userRepository, cancellationToken))
+    {
+        return AuthorizationExtensions.ForbidAction("You do not have access to this account.");
+    }
+
+    var batch = await viralIdeaBatchRepository.GetByIdAsync(batchId, cancellationToken);
+    if (batch is null || batch.AccountId != accountId)
+    {
+        return Results.NotFound(new { message = "Idea batch was not found." });
+    }
+
+    var removed = batch.RemoveTrash(DateTime.UtcNow);
+    await viralIdeaBatchRepository.UpsertAsync(batch, cancellationToken);
+    return Results.Ok(new
+    {
+        removed,
+        batch = ToViralIdeaBatchDto(batch)
+    });
 });
 
 static async Task<AuraUpBack.Application.Contracts.TrackedAccountOverviewDto> ToClientOverviewDtoAsync(
@@ -1053,6 +1137,7 @@ static async Task<ViralIdeaGenerationPreparation> PrepareViralIdeaGenerationAsyn
     ITrackedAccountRepository trackedAccountRepository,
     CancellationToken cancellationToken)
 {
+    var requestedIdeaCount = Math.Clamp(request.Count.GetValueOrDefault(90), 10, 200);
     var account = await trackedAccountRepository.GetByIdAsync(accountId, cancellationToken)
         ?? throw new InvalidOperationException("Tracked account was not found.");
 
@@ -1102,9 +1187,11 @@ static async Task<ViralIdeaGenerationPreparation> PrepareViralIdeaGenerationAsyn
         account.Id,
         account.Handle,
         normalizedObjective,
+        requestedIdeaCount,
         new ViralIdeaGenerationRequest(
             account.Handle,
             normalizedObjective,
+            requestedIdeaCount,
             sourceReels));
 }
 
@@ -1117,6 +1204,32 @@ static string BuildViralIdeaSourceTitle(string caption, string externalId)
 
     var normalized = caption.Trim();
     return normalized.Length <= 72 ? normalized : $"{normalized[..72].TrimEnd()}...";
+}
+
+static AuraUpBack.Application.Contracts.ViralIdeaGenerationResultDto ToViralIdeaBatchDto(ViralIdeaBatch batch)
+{
+    return new AuraUpBack.Application.Contracts.ViralIdeaGenerationResultDto(
+        batch.Id,
+        batch.AccountId,
+        batch.AccountHandle,
+        batch.Objective,
+        batch.RequestedIdeaCount,
+        batch.Ideas.Count,
+        batch.GeneratedAtUtc,
+        batch.Ideas
+            .OrderBy(item => item.Rank)
+            .Select(item => new AuraUpBack.Application.Contracts.ViralReelIdeaDto(
+                item.Id,
+                item.Rank,
+                item.Title,
+                item.Hook,
+                item.Premise,
+                item.Format,
+                item.WhyItCouldWork,
+                item.SourceReels,
+                item.Confidence,
+                item.Classification))
+            .ToList());
 }
 
 static async Task<AuraUpBack.Application.Contracts.WatchlistDashboardDto> ToClientWatchlistDashboardDtoAsync(
@@ -1279,13 +1392,18 @@ public sealed record CreateExplorationRequestRequest(
 
 public sealed record GenerateViralIdeasRequest(
     string Objective,
-    IReadOnlyCollection<Guid>? SelectedPostIds);
+    IReadOnlyCollection<Guid>? SelectedPostIds,
+    int? Count);
 
 public sealed record ViralIdeaGenerationPreparation(
     Guid AccountId,
     string AccountHandle,
     string Objective,
+    int RequestedIdeaCount,
     ViralIdeaGenerationRequest Request);
+
+public sealed record UpdateViralIdeaClassificationRequest(
+    ViralIdeaClassification Classification);
 
 public sealed record BackfillTrackedAccountHistoryRequest(
     int BatchSize = 12,

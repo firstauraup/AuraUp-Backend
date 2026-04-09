@@ -13,6 +13,8 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
     public DbSet<TrackedAccount> TrackedAccounts => Set<TrackedAccount>();
     public DbSet<TrackedPost> TrackedPosts => Set<TrackedPost>();
     public DbSet<ExplorationRequest> ExplorationRequests => Set<ExplorationRequest>();
+    public DbSet<ViralIdeaBatch> ViralIdeaBatches => Set<ViralIdeaBatch>();
+    public DbSet<ViralIdeaItem> ViralIdeaItems => Set<ViralIdeaItem>();
     public DbSet<AlertSignal> AlertSignals => Set<AlertSignal>();
     public DbSet<InstagramConnection> InstagramConnections => Set<InstagramConnection>();
     public DbSet<AppUser> AppUsers => Set<AppUser>();
@@ -77,6 +79,32 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
             entity.Property(x => x.SelectedPostExternalIds)
                 .HasConversion(stringListConverter)
                 .Metadata.SetValueComparer(stringListComparer);
+        });
+
+        modelBuilder.Entity<ViralIdeaBatch>(entity =>
+        {
+            entity.ToTable("ViralIdeaBatches");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.AccountHandle).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.Objective).HasMaxLength(4_000).IsRequired();
+            entity.HasIndex(x => new { x.AccountId, x.GeneratedAtUtc });
+            entity.HasMany(x => x.Ideas)
+                .WithOne()
+                .HasForeignKey(x => x.BatchId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ViralIdeaItem>(entity =>
+        {
+            entity.ToTable("ViralIdeaItems");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Title).HasMaxLength(300).IsRequired();
+            entity.Property(x => x.Hook).HasMaxLength(800).IsRequired();
+            entity.Property(x => x.Premise).HasMaxLength(2_000).IsRequired();
+            entity.Property(x => x.Format).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.WhyItCouldWork).HasMaxLength(2_000).IsRequired();
+            entity.Property(x => x.SourceReels).HasMaxLength(120).IsRequired();
+            entity.HasIndex(x => new { x.BatchId, x.Rank });
         });
 
         modelBuilder.Entity<AlertSignal>(entity =>

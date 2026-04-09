@@ -1,6 +1,7 @@
 using AuraUpBack.Application.Contracts;
 using AuraUpBack.Domain.Repositories;
 using AuraUpBack.Domain.Services;
+using AuraUpBack.Domain.Enums;
 
 namespace AuraUpBack.Application.Commands.GenerateViralReelIdeas;
 
@@ -49,6 +50,7 @@ internal sealed class GenerateViralReelIdeasCommandHandler(
             new ViralIdeaGenerationRequest(
                 account.Handle,
                 command.Objective,
+                90,
                 selectedReels.Select(post => new ViralIdeaSourceReel(
                     post.ExternalId,
                     BuildTitle(post.Caption, post.ExternalId),
@@ -66,12 +68,15 @@ internal sealed class GenerateViralReelIdeasCommandHandler(
             cancellationToken);
 
         return new ViralIdeaGenerationResultDto(
+            Guid.Empty,
             account.Id,
             account.Handle,
             command.Objective.Trim(),
             ideas.Count,
+            ideas.Count,
             DateTime.UtcNow,
             ideas.Select(idea => new ViralReelIdeaDto(
+                Guid.Empty,
                 idea.Rank,
                 idea.Title,
                 idea.Hook,
@@ -79,7 +84,8 @@ internal sealed class GenerateViralReelIdeasCommandHandler(
                 idea.Format,
                 idea.WhyItCouldWork,
                 idea.SourceReels,
-                idea.Confidence)).ToList());
+                idea.Confidence,
+                ViralIdeaClassification.Unreviewed)).ToList());
     }
 
     private static string BuildTitle(string caption, string externalId)

@@ -30,7 +30,7 @@ internal sealed class AnthropicViralIdeaGenerationService(
         var prompt = BuildPrompt(request);
         var payload = CreateRequestPayload(prompt, stream: false);
         var responseText = await SendJsonRequestAsync(payload, timeoutCts.Token);
-        return ParseIdeasFromResponseText(responseText);
+        return ParseIdeasFromResponseText(responseText, request.RequestedIdeaCount);
     }
 
     public async Task StreamIdeasAsync(
@@ -103,7 +103,7 @@ internal sealed class AnthropicViralIdeaGenerationService(
 
         await ProcessStreamFrameAsync(currentEvent, currentData.ToString(), outputBuffer, onEvent);
 
-        var ideas = ParseIdeasFromGeneratedText(outputBuffer.ToString());
+        var ideas = ParseIdeasFromGeneratedText(outputBuffer.ToString(), request.RequestedIdeaCount);
         await onEvent(new ViralIdeaGenerationStreamEvent("completed", string.Empty, ideas));
     }
 
@@ -232,7 +232,7 @@ internal sealed class AnthropicViralIdeaGenerationService(
         await onEvent(new ViralIdeaGenerationStreamEvent("delta", deltaText, null));
     }
 
-    private IReadOnlyCollection<ViralReelIdea> ParseIdeasFromResponseText(string responseText)
+    private IReadOnlyCollection<ViralReelIdea> ParseIdeasFromResponseText(string responseText, int expectedCount)
     {
         var anthropicResponse = JsonSerializer.Deserialize<AnthropicMessagesResponse>(responseText, JsonOptions)
             ?? throw new InvalidOperationException("Anthropic returned an empty response.");
@@ -244,10 +244,10 @@ internal sealed class AnthropicViralIdeaGenerationService(
                 .Select(item => item.Text?.Trim())
                 .Where(textItem => !string.IsNullOrWhiteSpace(textItem)));
 
-        return ParseIdeasFromGeneratedText(text);
+        return ParseIdeasFromGeneratedText(text, expectedCount);
     }
 
-    private IReadOnlyCollection<ViralReelIdea> ParseIdeasFromGeneratedText(string generatedText)
+    private IReadOnlyCollection<ViralReelIdea> ParseIdeasFromGeneratedText(string generatedText, int expectedCount)
     {
         var jsonPayload = ExtractJsonPayload(generatedText);
         var parsed = JsonSerializer.Deserialize<ViralIdeaResponseEnvelope>(jsonPayload, JsonOptions)
@@ -268,9 +268,9 @@ internal sealed class AnthropicViralIdeaGenerationService(
             .OrderBy(idea => idea.Rank)
             .ToList();
 
-        if (ideas.Count != 90)
+        if (ideas.Count != expectedCount)
         {
-            throw new InvalidOperationException($"Anthropic returned {ideas.Count} ideas. Expected exactly 90.");
+            throw new InvalidOperationException($"Anthropic returned {ideas.Count} ideas. Expected exactly {expectedCount}.");
         }
 
         return ideas;
@@ -280,7 +280,7 @@ internal sealed class AnthropicViralIdeaGenerationService(
     {
         var sb = new StringBuilder();
         sb.AppendLine("Eres un estratega senior de contenido short-form, obsesionado con patrones virales replicables.");
-        sb.AppendLine("Tu tarea es generar EXACTAMENTE 90 ideas virales para reels nuevos.");
+        sb.AppendLine($"Tu tarea es generar EXACTAMENTE {request.RequestedIdeaCount} ideas virales para reels nuevos.");
         sb.AppendLine("Idioma de salida: español.");
         sb.AppendLine("Usa exclusivamente los reels fuente, sus transcripciones y sus métricas.");
         sb.AppendLine("No repitas ideas. Mezcla formatos, hooks, ángulos, estructuras y niveles de audacia.");
@@ -324,7 +324,7 @@ internal sealed class AnthropicViralIdeaGenerationService(
         }
 
         sb.AppendLine("Reglas adicionales:");
-        sb.AppendLine("- Genera exactamente 90 ideas.");
+        sb.AppendLine($"- Genera exactamente {request.RequestedIdeaCount} ideas.");
         sb.AppendLine("- Cada idea debe ser distinta.");
         sb.AppendLine("- Usa confidence entre 1 y 100.");
         sb.AppendLine("- sourceReels debe citar el o los índices fuente más relevantes, por ejemplo: \"1, 3\".");

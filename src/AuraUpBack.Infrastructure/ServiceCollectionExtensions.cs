@@ -38,6 +38,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ITrackedAccountRepository, DbTrackedAccountRepository>();
         services.AddSingleton<IInstagramConnectionRepository, DbInstagramConnectionRepository>();
         services.AddSingleton<IExplorationRequestRepository, DbExplorationRequestRepository>();
+        services.AddSingleton<IViralIdeaBatchRepository, DbViralIdeaBatchRepository>();
         services.AddSingleton<IAlertSignalRepository, DbAlertSignalRepository>();
         services.AddSingleton<IAppUserRepository, DbAppUserRepository>();
         services.AddSingleton<IUserInvitationRepository, DbUserInvitationRepository>();

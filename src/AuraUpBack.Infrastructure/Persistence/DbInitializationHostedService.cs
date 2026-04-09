@@ -23,6 +23,7 @@ internal sealed class DbInitializationHostedService(
         await EnsureTrackedPostsIsReelColumnAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsSharesColumnAsync(dbContext, cancellationToken);
         await EnsureUserTablesAsync(dbContext, cancellationToken);
+        await EnsureViralIdeaTablesAsync(dbContext, cancellationToken);
 
         if (await HasAnyDataAsync(dbContext, cancellationToken))
         {
@@ -165,6 +166,41 @@ internal sealed class DbInitializationHostedService(
                 PRIMARY KEY ("UserId","AccountId")
             );
             CREATE INDEX IF NOT EXISTS "IX_UserAccountAssignments_AccountId" ON "UserAccountAssignments" ("AccountId");
+            """;
+
+        await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task EnsureViralIdeaTablesAsync(AuraUpBackDbContext dbContext, CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            CREATE TABLE IF NOT EXISTS "ViralIdeaBatches" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "AccountId" uuid NOT NULL,
+                "AccountHandle" character varying(120) NOT NULL,
+                "Objective" character varying(4000) NOT NULL,
+                "RequestedIdeaCount" integer NOT NULL,
+                "GeneratedAtUtc" timestamp with time zone NOT NULL,
+                "UpdatedAtUtc" timestamp with time zone NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS "IX_ViralIdeaBatches_AccountId_GeneratedAtUtc" ON "ViralIdeaBatches" ("AccountId", "GeneratedAtUtc");
+            CREATE TABLE IF NOT EXISTS "ViralIdeaItems" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "BatchId" uuid NOT NULL,
+                "Rank" integer NOT NULL,
+                "Title" character varying(300) NOT NULL,
+                "Hook" character varying(800) NOT NULL,
+                "Premise" character varying(2000) NOT NULL,
+                "Format" character varying(120) NOT NULL,
+                "WhyItCouldWork" character varying(2000) NOT NULL,
+                "SourceReels" character varying(120) NOT NULL,
+                "Confidence" integer NOT NULL,
+                "Classification" integer NOT NULL DEFAULT 0,
+                "CreatedAtUtc" timestamp with time zone NOT NULL,
+                "UpdatedAtUtc" timestamp with time zone NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS "IX_ViralIdeaItems_BatchId_Rank" ON "ViralIdeaItems" ("BatchId", "Rank");
             """;
 
         await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);

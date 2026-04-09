@@ -15,6 +15,7 @@ public interface IViralIdeaGenerationService
 public sealed record ViralIdeaGenerationRequest(
     string AccountHandle,
     string Objective,
+    int RequestedIdeaCount,
     IReadOnlyCollection<ViralIdeaSourceReel> SourceReels);
 
 public sealed record ViralIdeaSourceReel(
