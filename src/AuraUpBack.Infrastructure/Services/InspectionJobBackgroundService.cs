@@ -12,7 +12,18 @@ internal sealed class InspectionJobBackgroundService(
     ILogger<InspectionJobBackgroundService> logger)
     : BackgroundService
 {
+    private const int WorkerCount = 2;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        var workers = Enumerable.Range(0, WorkerCount)
+            .Select(_ => RunWorkerAsync(stoppingToken))
+            .ToArray();
+
+        await Task.WhenAll(workers);
+    }
+
+    private async Task RunWorkerAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
         {

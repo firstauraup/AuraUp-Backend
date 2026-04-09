@@ -42,6 +42,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IInspectionJobQueue, InMemoryInspectionJobQueue>();
         services.AddSingleton<IInspectionProgressReporter, InspectionProgressReporter>();
         services.AddSingleton<InspectionJobRunner>();
+        services.AddHostedService<InspectionJobBackgroundService>();
         services.AddHttpClient();
         services.AddSingleton<IInstagramCredentialVault, InstagramCredentialVault>();
         services.AddSingleton<IInstagramSettingsService, InstagramSettingsService>();

@@ -599,8 +599,7 @@ app.MapPut("/api/accounts/{accountId:guid}", async (
 app.MapPost("/api/accounts/{accountId:guid}/inspect", (
     HttpContext httpContext,
     Guid accountId,
-    IInspectionJobQueue inspectionJobQueue,
-    InspectionJobRunner inspectionJobRunner) =>
+    IInspectionJobQueue inspectionJobQueue) =>
 {
     var session = httpContext.RequireSession();
     if (session.IsClient())
@@ -609,7 +608,6 @@ app.MapPost("/api/accounts/{accountId:guid}/inspect", (
     }
 
     var job = inspectionJobQueue.Enqueue(accountId, "Manual");
-    inspectionJobRunner.Schedule(job.JobId);
     return Results.Accepted($"/api/accounts/{accountId}/inspect/status", job);
 });
 

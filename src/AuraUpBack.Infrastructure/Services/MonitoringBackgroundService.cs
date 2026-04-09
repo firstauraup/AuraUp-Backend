@@ -14,7 +14,6 @@ namespace AuraUpBack.Infrastructure.Services;
 public sealed class MonitoringBackgroundService(
     ITrackedAccountRepository trackedAccountRepository,
     IInspectionJobQueue inspectionJobQueue,
-    InspectionJobRunner inspectionJobRunner,
     IInstagramConnectionAutomation instagramConnectionAutomation,
     IInstagramSettingsService instagramSettingsService,
     IOptions<InstagramIntegrationOptions> instagramOptions,
@@ -69,7 +68,6 @@ public sealed class MonitoringBackgroundService(
                     }
 
                     var job = inspectionJobQueue.Enqueue(account.Id, "Monitoring");
-                    inspectionJobRunner.Schedule(job.JobId);
                     logger.LogInformation(
                         "Monitoreo encolado para @{Handle} con cadencia de {CadenceMinutes} minutos",
                         account.Handle,
