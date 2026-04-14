@@ -22,6 +22,7 @@ public sealed class TrackedAccount
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public List<TrackedPost> Posts { get; set; } = [];
+    public List<AccountMetricSnapshot> MetricSnapshots { get; set; } = [];
 
     public static TrackedAccount Create(string handle, string monitoringPrompt, bool monitoringEnabled, int checkEveryMinutes, DateTime nowUtc)
     {
@@ -54,6 +55,7 @@ public sealed class TrackedAccount
         LastResearchSummary = payload.ResearchSummary.Trim();
         LastInspectedAtUtc = nowUtc;
         UpdatedAtUtc = nowUtc;
+        CaptureMonthlyMetrics(nowUtc);
 
         var existingPostsByExternalId = Posts
             .ToDictionary(x => x.ExternalId, StringComparer.OrdinalIgnoreCase);
@@ -138,5 +140,30 @@ public sealed class TrackedAccount
     private static string NormalizeHandle(string handle)
     {
         return handle.Trim().TrimStart('@').ToLowerInvariant();
+    }
+
+    private void CaptureMonthlyMetrics(DateTime nowUtc)
+    {
+        var snapshotMonthUtc = new DateTime(nowUtc.Year, nowUtc.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+        var existingSnapshot = MetricSnapshots.FirstOrDefault(x => x.SnapshotMonthUtc == snapshotMonthUtc);
+
+        if (existingSnapshot is null)
+        {
+            MetricSnapshots.Add(new AccountMetricSnapshot
+            {
+                AccountId = Id,
+                SnapshotMonthUtc = snapshotMonthUtc,
+                CapturedAtUtc = nowUtc,
+                FollowersCount = FollowersCount,
+            });
+
+            MetricSnapshots = MetricSnapshots
+                .OrderBy(x => x.SnapshotMonthUtc)
+                .ToList();
+            return;
+        }
+
+        existingSnapshot.CapturedAtUtc = nowUtc;
+        existingSnapshot.FollowersCount = FollowersCount;
     }
 }

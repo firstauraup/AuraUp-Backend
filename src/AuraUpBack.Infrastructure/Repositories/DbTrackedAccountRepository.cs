@@ -13,6 +13,7 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
         return await dbContext.TrackedAccounts
             .AsNoTracking()
             .Include(x => x.Posts)
+            .Include(x => x.MetricSnapshots)
             .OrderBy(x => x.Handle)
             .ToListAsync(cancellationToken);
     }
@@ -23,6 +24,7 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
         return await dbContext.TrackedAccounts
             .AsNoTracking()
             .Include(x => x.Posts)
+            .Include(x => x.MetricSnapshots)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
     }
 
@@ -34,6 +36,7 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
         return await dbContext.TrackedAccounts
             .AsNoTracking()
             .Include(x => x.Posts)
+            .Include(x => x.MetricSnapshots)
             .FirstOrDefaultAsync(x => x.Handle == normalized, cancellationToken);
     }
 
@@ -41,6 +44,8 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await dbContext.TrackedAccounts
+            .Include(x => x.Posts)
+            .Include(x => x.MetricSnapshots)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
     }
 
@@ -50,6 +55,8 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
 
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await dbContext.TrackedAccounts
+            .Include(x => x.Posts)
+            .Include(x => x.MetricSnapshots)
             .FirstOrDefaultAsync(x => x.Handle == normalized, cancellationToken);
     }
 
@@ -66,11 +73,17 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
             {
                 var existing = await dbContext.TrackedAccounts
                     .Include(x => x.Posts)
+                    .Include(x => x.MetricSnapshots)
                     .FirstOrDefaultAsync(x => x.Id == account.Id, cancellationToken);
 
                 foreach (var post in account.Posts)
                 {
                     post.AccountId = account.Id;
+                }
+
+                foreach (var snapshot in account.MetricSnapshots)
+                {
+                    snapshot.AccountId = account.Id;
                 }
 
                 if (existing is null)
@@ -103,6 +116,29 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
                         post.AccountId = existing.Id;
                         existing.Posts.Add(post);
                         dbContext.Entry(post).State = EntityState.Added;
+                    }
+
+                    var existingSnapshotsByMonth = existing.MetricSnapshots
+                        .ToDictionary(x => x.SnapshotMonthUtc, x => x);
+                    var incomingMonths = new HashSet<DateTime>(account.MetricSnapshots.Select(x => x.SnapshotMonthUtc));
+
+                    foreach (var existingSnapshot in existing.MetricSnapshots.Where(x => !incomingMonths.Contains(x.SnapshotMonthUtc)).ToList())
+                    {
+                        dbContext.AccountMetricSnapshots.Remove(existingSnapshot);
+                    }
+
+                    foreach (var snapshot in account.MetricSnapshots)
+                    {
+                        if (existingSnapshotsByMonth.TryGetValue(snapshot.SnapshotMonthUtc, out var trackedSnapshot))
+                        {
+                            snapshot.AccountId = existing.Id;
+                            dbContext.Entry(trackedSnapshot).CurrentValues.SetValues(snapshot);
+                            continue;
+                        }
+
+                        snapshot.AccountId = existing.Id;
+                        existing.MetricSnapshots.Add(snapshot);
+                        dbContext.Entry(snapshot).State = EntityState.Added;
                     }
                 }
 

@@ -17,6 +17,7 @@ using AuraUpBack.Application.Commands.VerifyInstagramIntegrationCode;
 using AuraUpBack.Application.Queries.GetInstagramIntegrationStatus;
 using AuraUpBack.Application.Queries.GetInstagramExplorerAccountPreview;
 using AuraUpBack.Application.Queries.GetTrackedAccountAnalysis;
+using AuraUpBack.Application.Queries.GetTrackedAccountClientAnalytics;
 using AuraUpBack.Application.Queries.GetTrackedAccountOverview;
 using AuraUpBack.Application.Queries.GetWatchlistDashboard;
 using AuraUpBack.Application.Queries.SearchInstagramExplorer;
@@ -696,6 +697,23 @@ app.MapGet("/api/accounts/{accountId:guid}/analysis", async (
             minComments,
             minShares),
         cancellationToken);
+    return Results.Ok(result);
+});
+
+app.MapGet("/api/accounts/{accountId:guid}/client-analytics", async (
+    HttpContext httpContext,
+    Guid accountId,
+    IAppUserRepository userRepository,
+    IQueryDispatcher dispatcher,
+    CancellationToken cancellationToken) =>
+{
+    var session = httpContext.RequireSession();
+    if (!await session.CanAccessAccountAsync(accountId, userRepository, cancellationToken))
+    {
+        return AuthorizationExtensions.ForbidAction("You do not have access to this account.");
+    }
+
+    var result = await dispatcher.QueryAsync(new GetTrackedAccountClientAnalyticsQuery(accountId), cancellationToken);
     return Results.Ok(result);
 });
 

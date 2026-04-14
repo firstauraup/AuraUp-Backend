@@ -12,6 +12,7 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
 
     public DbSet<TrackedAccount> TrackedAccounts => Set<TrackedAccount>();
     public DbSet<TrackedPost> TrackedPosts => Set<TrackedPost>();
+    public DbSet<AccountMetricSnapshot> AccountMetricSnapshots => Set<AccountMetricSnapshot>();
     public DbSet<ExplorationRequest> ExplorationRequests => Set<ExplorationRequest>();
     public DbSet<ViralIdeaBatch> ViralIdeaBatches => Set<ViralIdeaBatch>();
     public DbSet<ViralIdeaItem> ViralIdeaItems => Set<ViralIdeaItem>();
@@ -49,6 +50,10 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
                 .WithOne()
                 .HasForeignKey(x => x.AccountId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(x => x.MetricSnapshots)
+                .WithOne()
+                .HasForeignKey(x => x.AccountId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<TrackedPost>(entity =>
@@ -67,6 +72,14 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
             entity.Property(x => x.TopicConfidence).HasPrecision(5, 2);
             entity.Property(x => x.PerformanceMultiplier).HasPrecision(18, 4);
             entity.HasIndex(x => new { x.AccountId, x.ExternalId }).IsUnique();
+        });
+
+        modelBuilder.Entity<AccountMetricSnapshot>(entity =>
+        {
+            entity.ToTable("AccountMetricSnapshots");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.AccountId, x.SnapshotMonthUtc }).IsUnique();
+            entity.HasIndex(x => x.CapturedAtUtc);
         });
 
         modelBuilder.Entity<ExplorationRequest>(entity =>

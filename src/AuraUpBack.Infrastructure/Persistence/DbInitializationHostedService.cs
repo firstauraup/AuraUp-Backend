@@ -22,6 +22,7 @@ internal sealed class DbInitializationHostedService(
         await EnsureTrackedPostsMediaColumnsAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsIsReelColumnAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsSharesColumnAsync(dbContext, cancellationToken);
+        await EnsureAccountMetricSnapshotsTableAsync(dbContext, cancellationToken);
         await EnsureUserTablesAsync(dbContext, cancellationToken);
         await EnsureViralIdeaTablesAsync(dbContext, cancellationToken);
 
@@ -43,6 +44,11 @@ internal sealed class DbInitializationHostedService(
             foreach (var post in account.Posts)
             {
                 post.AccountId = account.Id;
+            }
+
+            foreach (var metricSnapshot in account.MetricSnapshots)
+            {
+                metricSnapshot.AccountId = account.Id;
             }
         }
 
@@ -121,6 +127,24 @@ internal sealed class DbInitializationHostedService(
         const string sql =
             """
             ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "Shares" bigint NOT NULL DEFAULT 0;
+            """;
+
+        await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task EnsureAccountMetricSnapshotsTableAsync(AuraUpBackDbContext dbContext, CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            CREATE TABLE IF NOT EXISTS "AccountMetricSnapshots" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "AccountId" uuid NOT NULL,
+                "SnapshotMonthUtc" timestamp with time zone NOT NULL,
+                "CapturedAtUtc" timestamp with time zone NOT NULL,
+                "FollowersCount" bigint NOT NULL DEFAULT 0
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_AccountMetricSnapshots_AccountId_SnapshotMonthUtc" ON "AccountMetricSnapshots" ("AccountId", "SnapshotMonthUtc");
+            CREATE INDEX IF NOT EXISTS "IX_AccountMetricSnapshots_CapturedAtUtc" ON "AccountMetricSnapshots" ("CapturedAtUtc");
             """;
 
         await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
