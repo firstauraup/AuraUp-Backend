@@ -15,7 +15,7 @@ internal sealed class UpdateTrackedAccountMonitoringCommandHandler(ITrackedAccou
 {
     public async Task<TrackedAccountOverviewDto> HandleAsync(UpdateTrackedAccountMonitoringCommand command, CancellationToken cancellationToken)
     {
-        var account = await trackedAccountRepository.GetByIdAsync(command.AccountId, cancellationToken)
+        var account = await trackedAccountRepository.GetForMonitoringByIdAsync(command.AccountId, cancellationToken)
             ?? throw new InvalidOperationException("Tracked account was not found.");
 
         account.ConfigureMonitoring(

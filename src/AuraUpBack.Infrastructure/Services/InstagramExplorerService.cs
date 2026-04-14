@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Collections.Concurrent;
 using AuraUpBack.Domain.Enums;
@@ -23,6 +24,7 @@ internal sealed partial class InstagramExplorerService(
 {
     private static readonly HttpClient SnapshotHttpClient = CreateSnapshotHttpClient();
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> SearchLocks = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> PreviewLocks = new(StringComparer.Ordinal);
     private static readonly HashSet<string> ReservedInstagramPaths = new(StringComparer.OrdinalIgnoreCase)
     {
         "accounts",
@@ -100,30 +102,39 @@ internal sealed partial class InstagramExplorerService(
             return cachedPreview;
         }
 
-        var url = $"https://www.instagram.com/{normalizedHandle}/";
-        using var response = await SnapshotHttpClient.GetAsync(url, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        var previewLock = PreviewLocks.GetOrAdd(normalizedHandle, static _ => new SemaphoreSlim(1, 1));
+        await previewLock.WaitAsync(cancellationToken);
+
+        try
         {
-            throw new InvalidOperationException($"Instagram account @{normalizedHandle} could not be read.");
+            if (memoryCache.TryGetValue<ExplorerAccountPreview>(cacheKey, out cachedPreview) &&
+                cachedPreview is not null)
+            {
+                return cachedPreview;
+            }
+
+            var rawHtml = await ReadPreviewHtmlAsync(normalizedHandle, cancellationToken);
+            var description = ExtractMetaContent(rawHtml, "og:description");
+            var title = ExtractMetaContent(rawHtml, "og:title", ExtractHtmlTitle(rawHtml));
+
+            var preview = new ExplorerAccountPreview(
+                normalizedHandle,
+                ExtractDisplayName(title, normalizedHandle),
+                ExtractMetaContent(rawHtml, "og:image"),
+                ExtractBio(description, normalizedHandle),
+                TryParseFollowerCount(description));
+
+            memoryCache.Set(
+                cacheKey,
+                preview,
+                TimeSpan.FromMinutes(Math.Max(1, _options.ExplorerPreviewCacheMinutes)));
+
+            return preview;
         }
-
-        var rawHtml = await response.Content.ReadAsStringAsync(cancellationToken);
-        var description = ExtractMetaContent(rawHtml, "og:description");
-        var title = ExtractMetaContent(rawHtml, "og:title", ExtractHtmlTitle(rawHtml));
-
-        var preview = new ExplorerAccountPreview(
-            normalizedHandle,
-            ExtractDisplayName(title, normalizedHandle),
-            ExtractMetaContent(rawHtml, "og:image"),
-            ExtractBio(description, normalizedHandle),
-            TryParseFollowerCount(description));
-
-        memoryCache.Set(
-            cacheKey,
-            preview,
-            TimeSpan.FromMinutes(Math.Max(1, _options.ExplorerPreviewCacheMinutes)));
-
-        return preview;
+        finally
+        {
+            previewLock.Release();
+        }
     }
 
     private async Task<ExplorerSessionContext> ResolveExplorerSessionAsync(CancellationToken cancellationToken)
@@ -635,9 +646,50 @@ internal sealed partial class InstagramExplorerService(
             : 0;
     }
 
+    private async Task<string> ReadPreviewHtmlAsync(string normalizedHandle, CancellationToken cancellationToken)
+    {
+        var url = $"https://www.instagram.com/{normalizedHandle}/";
+        using var response = await SnapshotHttpClient.GetAsync(
+            url,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Instagram account @{normalizedHandle} could not be read.");
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+
+        var buffer = new char[8_192];
+        var builder = new StringBuilder(capacity: 65_536);
+        const int maxChars = 65_536;
+
+        while (builder.Length < maxChars)
+        {
+            var charsToRead = Math.Min(buffer.Length, maxChars - builder.Length);
+            var read = await reader.ReadBlockAsync(buffer.AsMemory(0, charsToRead), cancellationToken);
+            if (read <= 0)
+            {
+                break;
+            }
+
+            builder.Append(buffer, 0, read);
+
+            if (builder.ToString().Contains("</head>", StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+        }
+
+        return builder.ToString();
+    }
+
     private static HttpClient CreateSnapshotHttpClient()
     {
         var client = new HttpClient();
+        client.Timeout = TimeSpan.FromSeconds(10);
         client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36");
         client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
         client.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");

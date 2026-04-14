@@ -37,6 +37,22 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
             .FirstOrDefaultAsync(x => x.Handle == normalized, cancellationToken);
     }
 
+    public async Task<TrackedAccount?> GetForMonitoringByIdAsync(Guid id, CancellationToken cancellationToken)
+    {
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await dbContext.TrackedAccounts
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+    }
+
+    public async Task<TrackedAccount?> GetForMonitoringByHandleAsync(string handle, CancellationToken cancellationToken)
+    {
+        var normalized = handle.Trim().TrimStart('@').ToLowerInvariant();
+
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await dbContext.TrackedAccounts
+            .FirstOrDefaultAsync(x => x.Handle == normalized, cancellationToken);
+    }
+
     public async Task UpsertAsync(TrackedAccount account, CancellationToken cancellationToken)
     {
         const int maxAttempts = 2;

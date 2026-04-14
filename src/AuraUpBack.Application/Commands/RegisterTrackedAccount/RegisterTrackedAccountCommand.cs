@@ -17,7 +17,7 @@ internal sealed class RegisterTrackedAccountCommandHandler(ITrackedAccountReposi
     public async Task<TrackedAccountOverviewDto> HandleAsync(RegisterTrackedAccountCommand command, CancellationToken cancellationToken)
     {
         var nowUtc = DateTime.UtcNow;
-        var account = await trackedAccountRepository.GetByHandleAsync(command.Handle, cancellationToken);
+        var account = await trackedAccountRepository.GetForMonitoringByHandleAsync(command.Handle, cancellationToken);
 
         if (account is null)
         {

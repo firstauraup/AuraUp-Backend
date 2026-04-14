@@ -31,6 +31,16 @@ internal sealed class FileTrackedAccountRepository(FileAuraUpBackStore store) : 
             cancellationToken);
     }
 
+    public Task<TrackedAccount?> GetForMonitoringByIdAsync(Guid id, CancellationToken cancellationToken)
+    {
+        return GetByIdAsync(id, cancellationToken);
+    }
+
+    public Task<TrackedAccount?> GetForMonitoringByHandleAsync(string handle, CancellationToken cancellationToken)
+    {
+        return GetByHandleAsync(handle, cancellationToken);
+    }
+
     public Task UpsertAsync(TrackedAccount account, CancellationToken cancellationToken)
     {
         return store.WriteAsync(
