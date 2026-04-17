@@ -16,6 +16,7 @@ using AuraUpBack.Application.Commands.VerifyInstagramIntegrationCode;
 using AuraUpBack.Application.Queries.GetInstagramIntegrationStatus;
 using AuraUpBack.Application.Queries.GetInstagramExplorerAccountPreview;
 using AuraUpBack.Application.Queries.GetTrackedAccountAnalysis;
+using AuraUpBack.Application.Queries.GetTrackedAccountClientAnalytics;
 using AuraUpBack.Application.Queries.GetTrackedAccountOverview;
 using AuraUpBack.Application.Queries.GetWatchlistDashboard;
 using AuraUpBack.Application.Queries.SearchInstagramExplorer;
@@ -47,6 +48,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IQueryHandler<GetInstagramIntegrationStatusQuery, Contracts.InstagramIntegrationDto>, GetInstagramIntegrationStatusQueryHandler>();
         services.AddSingleton<IQueryHandler<GetInstagramExplorerAccountPreviewQuery, Contracts.ExplorerAccountPreviewDto>, GetInstagramExplorerAccountPreviewQueryHandler>();
         services.AddSingleton<IQueryHandler<GetTrackedAccountAnalysisQuery, Contracts.TrackedAccountAnalysisDto>, GetTrackedAccountAnalysisQueryHandler>();
+        services.AddSingleton<IQueryHandler<GetTrackedAccountClientAnalyticsQuery, Contracts.TrackedAccountClientAnalyticsDto>, GetTrackedAccountClientAnalyticsQueryHandler>();
         services.AddSingleton<IQueryHandler<GetTrackedAccountOverviewQuery, Contracts.TrackedAccountOverviewDto>, GetTrackedAccountOverviewQueryHandler>();
         services.AddSingleton<IQueryHandler<GetWatchlistDashboardQuery, Contracts.WatchlistDashboardDto>, GetWatchlistDashboardQueryHandler>();
         services.AddSingleton<IQueryHandler<SearchInstagramExplorerQuery, Contracts.ExplorerSearchResultDto>, SearchInstagramExplorerQueryHandler>();
