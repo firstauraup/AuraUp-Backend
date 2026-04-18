@@ -102,11 +102,23 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         {
             transcript = await WaitForTranscriptAsync(page, videoUrl, timeoutToken);
         }
+        catch (InvalidOperationException exception)
+        {
+            logger.LogWarning(
+                exception,
+                "ClipTranscribe failed for {VideoUrl}. Falling back to caption-based transcript.",
+                videoUrl);
+
+            return BuildFallbackTranscript(videoUrl, caption);
+        }
         catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new InvalidOperationException(
-                $"ClipTranscribe timed out while waiting for the transcript for '{videoUrl}'.",
-                exception);
+            logger.LogWarning(
+                exception,
+                "ClipTranscribe timed out for {VideoUrl}. Falling back to caption-based transcript.",
+                videoUrl);
+
+            return BuildFallbackTranscript(videoUrl, caption);
         }
 
         if (!string.IsNullOrWhiteSpace(transcript))
@@ -114,8 +126,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             return transcript;
         }
 
-        throw new InvalidOperationException(
-            $"ClipTranscribe did not return a usable transcript for '{videoUrl}'.");
+        return BuildFallbackTranscript(videoUrl, caption);
     }
 
     private static async Task DismissDecorativeUiAsync(IPage page)
@@ -125,7 +136,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             await page.EvaluateAsync(
                 """
                 () => {
-                  const closePattern = /(accept|agree|close|dismiss|got it|continue)/i;
+                  const closePattern = /(accept|agree|close|dismiss|got it|continue|aceptar|cerrar|entendido|continuar)/i;
                   const candidates = Array.from(document.querySelectorAll('button, [role="button"]'));
                   for (const element of candidates) {
                     const text = (element.textContent || '').trim();
@@ -154,7 +165,10 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         {
             "input[type='url']",
             "input[placeholder*='paste' i]",
+            "input[placeholder*='pega' i]",
+            "input[placeholder*='url' i]",
             "textarea[placeholder*='paste' i]",
+            "textarea[placeholder*='pega' i]",
             "textarea",
             "input"
         };
@@ -182,30 +196,42 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 
     private static async Task SubmitAsync(IPage page, ILocator input)
     {
-        var button = page.GetByRole(AriaRole.Button, new PageGetByRoleOptions
+        foreach (var label in new[]
+                 {
+                     "Transcribe",
+                     "Generate Transcript",
+                     "Get Transcript",
+                     "Create Transcript",
+                     "Transcribir",
+                     "Generar transcripción",
+                     "Obtener transcripción"
+                 })
         {
-            Name = "Transcribe",
-            Exact = true
-        }).First;
-
-        try
-        {
-            await button.WaitForAsync(new LocatorWaitForOptions
+            var button = page.GetByRole(AriaRole.Button, new PageGetByRoleOptions
             {
-                State = WaitForSelectorState.Visible,
-                Timeout = 5_000
+                Name = label
             });
 
-            await button.ClickAsync(new LocatorClickOptions
+            try
             {
-                Force = true
-            });
-            return;
+                await button.First.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 1_500
+                });
+
+                await button.First.ClickAsync(new LocatorClickOptions
+                {
+                    Force = true
+                });
+                return;
+            }
+            catch (PlaywrightException)
+            {
+            }
         }
-        catch (PlaywrightException)
-        {
-            await input.PressAsync("Enter");
-        }
+
+        await input.PressAsync("Enter");
     }
 
     private async Task<string> WaitForTranscriptAsync(IPage page, string videoUrl, CancellationToken cancellationToken)
@@ -233,6 +259,13 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             if (await IsAuthenticationWallAsync(page))
             {
                 throw new InvalidOperationException("ClipTranscribe requested authentication before returning a transcript.");
+            }
+
+            var pageError = await TryReadProcessingErrorAsync(page);
+            if (!string.IsNullOrWhiteSpace(pageError))
+            {
+                throw new InvalidOperationException(
+                    $"ClipTranscribe reported an error while transcribing '{videoUrl}': {pageError}");
             }
 
             await Task.Delay(1_500, cancellationToken);
@@ -377,7 +410,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             }
 
             var normalized = NormalizeTranscript(candidate);
-            if (normalized.Length < 80)
+            if (normalized.Length < 40)
             {
                 return null;
             }
@@ -442,9 +475,17 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     bodyText.includes('continue with email') ||
                     bodyText.includes('enter your email') ||
                     bodyText.includes('sign in to continue') ||
-                    bodyText.includes('log in to continue');
+                    bodyText.includes('log in to continue') ||
+                    bodyText.includes('continuar con google') ||
+                    bodyText.includes('continuar con correo') ||
+                    bodyText.includes('inicia sesión para continuar') ||
+                    bodyText.includes('iniciar sesión para continuar');
 
-                  const signInButtons = authButtons.filter((text) => text === 'sign in' || text === 'log in');
+                  const signInButtons = authButtons.filter((text) =>
+                    text === 'sign in' ||
+                    text === 'log in' ||
+                    text === 'iniciar sesión' ||
+                    text === 'acceder');
                   return hasAuthHeading && signInButtons.length > 0;
                 }
                 """);
@@ -462,11 +503,60 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             var bodyText = await TryReadBodyTextAsync(page);
             return bodyText.Contains("Working…", StringComparison.OrdinalIgnoreCase) ||
                    bodyText.Contains("Working...", StringComparison.OrdinalIgnoreCase) ||
-                   bodyText.Contains("transcribing", StringComparison.OrdinalIgnoreCase);
+                   bodyText.Contains("transcribing", StringComparison.OrdinalIgnoreCase) ||
+                   bodyText.Contains("generating transcript", StringComparison.OrdinalIgnoreCase) ||
+                   bodyText.Contains("processing", StringComparison.OrdinalIgnoreCase) ||
+                   bodyText.Contains("trabajando", StringComparison.OrdinalIgnoreCase) ||
+                   bodyText.Contains("transcribiendo", StringComparison.OrdinalIgnoreCase) ||
+                   bodyText.Contains("procesando", StringComparison.OrdinalIgnoreCase);
         }
         catch (PlaywrightException)
         {
             return false;
+        }
+    }
+
+    private static async Task<string?> TryReadProcessingErrorAsync(IPage page)
+    {
+        try
+        {
+            var bodyText = await TryReadBodyTextAsync(page);
+            if (string.IsNullOrWhiteSpace(bodyText))
+            {
+                return null;
+            }
+
+            foreach (var line in bodyText
+                         .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (line.Length < 8)
+                {
+                    continue;
+                }
+
+                if (line.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("unable", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("try again", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("unsupported", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("too many requests", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("no transcript", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("fallo", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("error al", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("intenta de nuevo", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("demasiadas solicitudes", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("sin transcripción", StringComparison.OrdinalIgnoreCase))
+                {
+                    return line;
+                }
+            }
+
+            return null;
+        }
+        catch (PlaywrightException)
+        {
+            return null;
         }
     }
 
@@ -485,6 +575,12 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         normalized = Regex.Replace(
             normalized,
             @"\s*(Analyze Comments|Create My Version).*$",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        normalized = Regex.Replace(
+            normalized,
+            @"\s*(Translate|Traducir|Copy|Copiar|Download|Descargar).*$",
             string.Empty,
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
@@ -509,5 +605,18 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         {
             return string.Empty;
         }
+    }
+
+    private static string BuildFallbackTranscript(string videoUrl, string caption)
+    {
+        var normalizedCaption = string.IsNullOrWhiteSpace(caption)
+            ? "Transcript unavailable from external provider."
+            : caption.Trim();
+
+        return string.Join(' ', [
+            "Transcript fallback.",
+            normalizedCaption,
+            $"Source: {videoUrl}"
+        ]);
     }
 }

@@ -446,10 +446,11 @@ internal sealed partial class RpaInstagramInspectionProvider(
         var discoveredLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var knownIds = new HashSet<string>(knownPostExternalIds, StringComparer.OrdinalIgnoreCase);
         RpaProfileSnapshot? latestSnapshot = null;
+        var scrollPasses = 0;
         var scrollAttemptsWithoutNewPosts = 0;
         var profileUrl = $"https://www.instagram.com/{handle}/reels/";
 
-        while (scrollAttemptsWithoutNewPosts < 3 && discoveredLinks.Count < maxPostsToCollect)
+        while (scrollAttemptsWithoutNewPosts < 8 && discoveredLinks.Count < maxPostsToCollect)
         {
             try
             {
@@ -495,7 +496,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     .Select(link => ExtractExternalId(link, handle, 0))
                     .Count(externalId => !knownIds.Contains(externalId));
 
-                if (newDiscoveredPosts >= desiredNewPosts)
+                if (newDiscoveredPosts >= desiredNewPosts && scrollPasses > 0)
                 {
                     break;
                 }
@@ -510,7 +511,8 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 }
 
                 await ScrollProfileAsync(page);
-                await page.WaitForTimeoutAsync(1_500);
+                scrollPasses++;
+                await page.WaitForTimeoutAsync(scrollPasses <= 2 ? 2_500 : 1_500);
             }
             catch (PlaywrightException exception) when (IsPageCrashException(exception))
             {
@@ -625,6 +627,12 @@ internal sealed partial class RpaInstagramInspectionProvider(
         await page.EvaluateAsync(
             """
             () => {
+              const reelAnchors = Array.from(document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"], a[href*="/tv/"]'));
+              const lastAnchor = reelAnchors.at(-1);
+              if (lastAnchor instanceof HTMLElement) {
+                lastAnchor.scrollIntoView({ behavior: 'instant', block: 'end' });
+              }
+
               const selectors = ['main', 'section', 'article', 'div'];
               const candidates = [];
 
@@ -640,7 +648,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
 
               const uniqueCandidates = Array.from(new Set(candidates));
               for (const element of uniqueCandidates) {
-                element.scrollTop = element.scrollHeight;
+                element.scrollTop = Math.max(element.scrollTop, element.scrollHeight - Math.max(200, element.clientHeight / 3));
               }
 
               if (document.scrollingElement) {
@@ -658,6 +666,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
             }
             """);
 
+        await page.Mouse.WheelAsync(0, 1800);
         await page.Mouse.WheelAsync(0, 2200);
         await page.Keyboard.PressAsync("End");
     }
