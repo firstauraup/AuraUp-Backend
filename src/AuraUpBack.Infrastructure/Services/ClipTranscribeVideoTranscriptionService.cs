@@ -13,7 +13,10 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 {
     private const string ReelsTranscriptPath = "instagram-reels-transcript-generator";
     private static readonly Regex MarketingNoiseRegex = new(
-        "transcribe tiktok|instagram reels to text|youtube shorts to text|no credit card required|upgrade to pro|start creating for free|simple pricing|explore tools|how it works|built for modern creators",
+        "transcribe tiktok|instagram reels to text|youtube shorts to text|no credit card required|upgrade to pro|start creating for free|simple pricing|explore tools|how it works|built for modern creators|formato corto|formato largo|preguntas frecuentes|iniciar sesión|inicia sesión|short format|long format|faq|log in|sign in",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex NavigationNoiseRegex = new(
+        "^(?:formato corto|formato largo|preguntas frecuentes|iniciar sesión|inicia sesión|short format|long format|faq|sign in|log in|pricing|home|tools)(?:\\s+(?:formato corto|formato largo|preguntas frecuentes|iniciar sesión|inicia sesión|short format|long format|faq|sign in|log in|pricing|home|tools))*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly TranscriptionOptions _options = options.Value;
@@ -420,6 +423,12 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 return null;
             }
 
+            if (NavigationNoiseRegex.IsMatch(normalized) || IsLikelyNavigationNoise(normalized))
+            {
+                logger.LogInformation("ClipTranscribe rejected navigation text while reading transcript output.");
+                return null;
+            }
+
             return normalized;
         }
         catch (PlaywrightException exception)
@@ -587,6 +596,56 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         normalized = Regex.Replace(normalized, @"\n{3,}", "\n\n");
         normalized = Regex.Replace(normalized, @"[ \t]{2,}", " ");
         return normalized.Trim();
+    }
+
+    private static bool IsLikelyNavigationNoise(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        var normalized = value
+            .Replace('\n', ' ')
+            .Trim();
+
+        var tokens = normalized
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (tokens.Length == 0)
+        {
+            return true;
+        }
+
+        var noisePhrases = new[]
+        {
+            "formato corto",
+            "formato largo",
+            "preguntas frecuentes",
+            "iniciar sesión",
+            "inicia sesión",
+            "short format",
+            "long format",
+            "faq",
+            "sign in",
+            "log in",
+            "pricing",
+            "tools",
+            "home"
+        };
+
+        var matched = noisePhrases.Count(phrase => normalized.Contains(phrase, StringComparison.OrdinalIgnoreCase));
+        if (matched >= 2 && tokens.Length <= 16)
+        {
+            return true;
+        }
+
+        var distinctTokenCount = tokens
+            .Select(token => token.ToLowerInvariant())
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+
+        return distinctTokenCount <= 6 && tokens.Length <= 12 && matched > 0;
     }
 
     private string BuildReelsTranscriptUrl()
