@@ -595,7 +595,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 
         normalized = Regex.Replace(normalized, @"\n{3,}", "\n\n");
         normalized = Regex.Replace(normalized, @"[ \t]{2,}", " ");
-        return normalized.Trim();
+        return normalized.Trim(' ', '"', '\'', '“', '”', '‘', '’');
     }
 
     private static bool IsLikelyNavigationNoise(string value)
@@ -729,11 +729,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             }
 
             logger.LogInformation("Instagram fallback transcript extracted for {VideoUrl}", videoUrl);
-            return string.Join(' ', [
-                "Transcripción alternativa.",
-                extracted,
-                $"Fuente: {videoUrl}"
-            ]);
+            return extracted;
         }
         catch (PlaywrightException exception)
         {
@@ -804,7 +800,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         normalized = Regex.Replace(normalized, @"^\s*Watch this reel by .*? on Instagram:\s*", string.Empty, RegexOptions.IgnoreCase);
         normalized = Regex.Replace(normalized, @"^\s*Ver este reel de .*? en Instagram:\s*", string.Empty, RegexOptions.IgnoreCase);
         normalized = Regex.Replace(normalized, @"\s+\d[\d\.,]*\s+(?:likes?|me gusta|comments?|comentarios|views?|visualizaciones)\b.*$", string.Empty, RegexOptions.IgnoreCase);
-        normalized = normalized.Trim(' ', '-', '|', ':', '.', ',', '"', '\'');
+        normalized = normalized.Trim(' ', '-', '|', ':', '.', ',', '"', '\'', '“', '”', '‘', '’');
 
         if (string.IsNullOrWhiteSpace(normalized))
         {
@@ -845,15 +841,13 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 
     private static string BuildFallbackTranscript(string videoUrl, string caption)
     {
-        var normalizedCaption = string.IsNullOrWhiteSpace(caption)
-            ? "Transcripción no disponible desde proveedor externo."
-            : caption.Trim();
+        var normalizedCaption = NormalizeInstagramCandidate(caption);
+        if (!string.IsNullOrWhiteSpace(normalizedCaption))
+        {
+            return normalizedCaption;
+        }
 
-        return string.Join(' ', [
-            "Transcripción alternativa.",
-            normalizedCaption,
-            $"Fuente: {videoUrl}"
-        ]);
+        return "Transcripción no disponible desde proveedor externo.";
     }
 
     private sealed record InstagramFallbackPayload(
