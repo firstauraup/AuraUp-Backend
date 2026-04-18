@@ -901,7 +901,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 }
 
                 var canonicalUrl = NormalizeInstagramPostUrl(snapshot.PageUrl, postUrl, externalId);
-                var caption = ExtractCaption(snapshot.OgTitle, snapshot.OgDescription, handle, index);
+                var caption = ExtractCaption(snapshot.OgTitle, snapshot.OgDescription, snapshot.BodyText, handle, index);
                 var classification = PostTopicClassifier.Classify(caption, snapshot.BodyText);
                 var likes = TryParseMetric(snapshot.OgDescription, "likes");
                 var comments = TryParseMetric(snapshot.OgDescription, "comments");
@@ -1121,33 +1121,141 @@ internal sealed partial class RpaInstagramInspectionProvider(
         return string.IsNullOrWhiteSpace(cleanTitle) ? handle : cleanTitle;
     }
 
-    private static string ExtractCaption(string ogTitle, string ogDescription, string handle, int index)
+    private static string ExtractCaption(string ogTitle, string ogDescription, string bodyText, string handle, int index)
     {
-        var quotedCaption = QuotedCaptionRegex().Match(ogTitle);
-        if (quotedCaption.Success)
+        foreach (var candidate in new[]
+                 {
+                     TryExtractCaptionCandidate(ogTitle),
+                     TryExtractCaptionCandidate(ogDescription),
+                     TryExtractCaptionFromBody(bodyText, handle)
+                 })
         {
-            return quotedCaption.Groups["caption"].Value.Trim();
-        }
-
-        var descriptionCaption = QuotedCaptionRegex().Match(ogDescription);
-        if (descriptionCaption.Success)
-        {
-            return descriptionCaption.Groups["caption"].Value.Trim();
-        }
-
-        var colonCaption = DescriptionCaptionRegex().Match(ogDescription);
-        if (colonCaption.Success)
-        {
-            return colonCaption.Groups["caption"].Value.Trim();
-        }
-
-        var titleCaption = TitleCaptionRegex().Match(ogTitle);
-        if (titleCaption.Success)
-        {
-            return titleCaption.Groups["caption"].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(candidate))
+            {
+                return candidate;
+            }
         }
 
         return $"Instagram post {index + 1} captured via RPA for @{handle}.";
+    }
+
+    private static string? TryExtractCaptionCandidate(string source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return null;
+        }
+
+        var quotedCaption = QuotedCaptionRegex().Match(source);
+        if (quotedCaption.Success)
+        {
+            return NormalizeCaptionCandidate(quotedCaption.Groups["caption"].Value);
+        }
+
+        var colonCaption = DescriptionCaptionRegex().Match(source);
+        if (colonCaption.Success)
+        {
+            return NormalizeCaptionCandidate(colonCaption.Groups["caption"].Value);
+        }
+
+        var titleCaption = TitleCaptionRegex().Match(source);
+        if (titleCaption.Success)
+        {
+            return NormalizeCaptionCandidate(titleCaption.Groups["caption"].Value);
+        }
+
+        return NormalizeCaptionCandidate(source);
+    }
+
+    private static string? TryExtractCaptionFromBody(string bodyText, string handle)
+    {
+        if (string.IsNullOrWhiteSpace(bodyText))
+        {
+            return null;
+        }
+
+        var lines = bodyText
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(NormalizeCaptionCandidate)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToList();
+
+        foreach (var line in lines)
+        {
+            if (line!.StartsWith('@') &&
+                !line.Equals($"@{handle}", StringComparison.OrdinalIgnoreCase) &&
+                line.Length > 8)
+            {
+                return line;
+            }
+        }
+
+        return lines.FirstOrDefault(line => IsUsefulCaptionLine(line!, handle));
+    }
+
+    private static string? NormalizeCaptionCandidate(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var normalized = value.Trim();
+        normalized = Regex.Replace(normalized, @"\s+", " ");
+        normalized = Regex.Replace(normalized, @"^[^A-Za-z0-9@#¡¿]+", string.Empty);
+        normalized = Regex.Replace(normalized, @"\s+(likes?|views?|comments?)\b.*$", string.Empty, RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, @"\b(?:more|ver más|see translation|ver traducción)\b.*$", string.Empty, RegexOptions.IgnoreCase);
+        normalized = normalized.Trim(' ', '-', '|', ':', '.', ',', '"', '\'');
+
+        if (!IsUsefulCaptionLine(normalized, null))
+        {
+            return null;
+        }
+
+        return normalized;
+    }
+
+    private static bool IsUsefulCaptionLine(string value, string? handle)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        if (value.Length < 8)
+        {
+            return false;
+        }
+
+        var noisePatterns = new[]
+        {
+            "instagram",
+            "captured via rpa",
+            "capturada mediante rpa",
+            "log in",
+            "iniciar sesión",
+            "follow",
+            "seguir",
+            "reel",
+            "audio original",
+            "original audio"
+        };
+
+        if (noisePatterns.Any(pattern => value.Contains(pattern, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (string.IsNullOrWhiteSpace(handle) || !value.Contains($"@{handle}", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        var metricOnly = Regex.IsMatch(value, @"^(?:[\d\.,]+\s*(?:likes?|views?|comments?|shares?)\s*)+$", RegexOptions.IgnoreCase);
+        if (metricOnly)
+        {
+            return false;
+        }
+
+        return value.Any(char.IsLetter);
     }
 
     private static long TryParseMetric(string source, string metricName)

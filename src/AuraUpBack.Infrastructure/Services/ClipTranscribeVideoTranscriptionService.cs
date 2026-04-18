@@ -109,19 +109,19 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         {
             logger.LogWarning(
                 exception,
-                "ClipTranscribe failed for {VideoUrl}. Falling back to caption-based transcript.",
+                "ClipTranscribe failed for {VideoUrl}. Falling back to Instagram transcript extraction.",
                 videoUrl);
 
-            return BuildFallbackTranscript(videoUrl, caption);
+            return await BuildFallbackTranscriptAsync(context, videoUrl, caption, cancellationToken);
         }
         catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
             logger.LogWarning(
                 exception,
-                "ClipTranscribe timed out for {VideoUrl}. Falling back to caption-based transcript.",
+                "ClipTranscribe timed out for {VideoUrl}. Falling back to Instagram transcript extraction.",
                 videoUrl);
 
-            return BuildFallbackTranscript(videoUrl, caption);
+            return await BuildFallbackTranscriptAsync(context, videoUrl, caption, cancellationToken);
         }
 
         if (!string.IsNullOrWhiteSpace(transcript))
@@ -129,7 +129,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             return transcript;
         }
 
-        return BuildFallbackTranscript(videoUrl, caption);
+        return await BuildFallbackTranscriptAsync(context, videoUrl, caption, cancellationToken);
     }
 
     private static async Task DismissDecorativeUiAsync(IPage page)
@@ -666,16 +666,198 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         }
     }
 
+    private async Task<string> BuildFallbackTranscriptAsync(
+        IBrowserContext context,
+        string videoUrl,
+        string caption,
+        CancellationToken cancellationToken)
+    {
+        var instagramFallback = await TryExtractTranscriptFromInstagramAsync(context, videoUrl, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(instagramFallback))
+        {
+            return instagramFallback;
+        }
+
+        return BuildFallbackTranscript(videoUrl, caption);
+    }
+
+    private async Task<string?> TryExtractTranscriptFromInstagramAsync(
+        IBrowserContext context,
+        string videoUrl,
+        CancellationToken cancellationToken)
+    {
+        IPage? instagramPage = null;
+
+        try
+        {
+            instagramPage = await context.NewPageAsync();
+            instagramPage.SetDefaultTimeout(Math.Max(15, _options.RequestTimeoutSeconds) * 1000);
+
+            await instagramPage.GotoAsync(videoUrl, new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.DOMContentLoaded,
+                Timeout = Math.Max(15, _options.RequestTimeoutSeconds) * 1000
+            });
+
+            await instagramPage.WaitForTimeoutAsync(2_000);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var payloadJson = await instagramPage.EvaluateAsync<string>(
+                """
+                () => JSON.stringify({
+                  title: document.querySelector('meta[property="og:title"]')?.getAttribute('content') || '',
+                  description: document.querySelector('meta[property="og:description"]')?.getAttribute('content') || '',
+                  bodyText: document.body?.innerText || ''
+                })
+                """);
+
+            if (string.IsNullOrWhiteSpace(payloadJson))
+            {
+                return null;
+            }
+
+            var payload = System.Text.Json.JsonSerializer.Deserialize<InstagramFallbackPayload>(payloadJson);
+            if (payload is null)
+            {
+                return null;
+            }
+
+            var extracted = ExtractInstagramTranscriptCandidate(payload.Title, payload.Description, payload.BodyText);
+            if (string.IsNullOrWhiteSpace(extracted))
+            {
+                return null;
+            }
+
+            logger.LogInformation("Instagram fallback transcript extracted for {VideoUrl}", videoUrl);
+            return string.Join(' ', [
+                "Transcripción alternativa.",
+                extracted,
+                $"Fuente: {videoUrl}"
+            ]);
+        }
+        catch (PlaywrightException exception)
+        {
+            logger.LogWarning(exception, "Instagram fallback transcript extraction failed for {VideoUrl}", videoUrl);
+            return null;
+        }
+        finally
+        {
+            if (instagramPage is not null)
+            {
+                try
+                {
+                    await instagramPage.CloseAsync();
+                }
+                catch (PlaywrightException)
+                {
+                }
+            }
+        }
+    }
+
+    private static string? ExtractInstagramTranscriptCandidate(string title, string description, string bodyText)
+    {
+        foreach (var candidate in new[]
+                 {
+                     NormalizeInstagramCandidate(title),
+                     NormalizeInstagramCandidate(description),
+                     ExtractInstagramBodyCandidate(bodyText)
+                 })
+        {
+            if (!string.IsNullOrWhiteSpace(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ExtractInstagramBodyCandidate(string bodyText)
+    {
+        if (string.IsNullOrWhiteSpace(bodyText))
+        {
+            return null;
+        }
+
+        var candidates = bodyText
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(NormalizeInstagramCandidate)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Cast<string>()
+            .Where(value => value.Length >= 20)
+            .OrderByDescending(value => value.Length)
+            .ToList();
+
+        return candidates.FirstOrDefault();
+    }
+
+    private static string? NormalizeInstagramCandidate(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var normalized = value.Trim();
+        normalized = Regex.Replace(normalized, @"\s+", " ");
+        normalized = Regex.Replace(normalized, @"^\s*Watch this reel by .*? on Instagram:\s*", string.Empty, RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, @"^\s*Ver este reel de .*? en Instagram:\s*", string.Empty, RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, @"\s+\d[\d\.,]*\s+(?:likes?|me gusta|comments?|comentarios|views?|visualizaciones)\b.*$", string.Empty, RegexOptions.IgnoreCase);
+        normalized = normalized.Trim(' ', '-', '|', ':', '.', ',', '"', '\'');
+
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return null;
+        }
+
+        if (normalized.Length < 8)
+        {
+            return null;
+        }
+
+        if (MarketingNoiseRegex.IsMatch(normalized) ||
+            NavigationNoiseRegex.IsMatch(normalized) ||
+            IsLikelyNavigationNoise(normalized))
+        {
+            return null;
+        }
+
+        var banned = new[]
+        {
+            "instagram",
+            "captured via rpa",
+            "capturada mediante rpa",
+            "audio original",
+            "original audio",
+            "iniciar sesión",
+            "log in",
+            "sign in"
+        };
+
+        if (banned.Any(pattern => normalized.Contains(pattern, StringComparison.OrdinalIgnoreCase)))
+        {
+            return null;
+        }
+
+        return normalized;
+    }
+
     private static string BuildFallbackTranscript(string videoUrl, string caption)
     {
         var normalizedCaption = string.IsNullOrWhiteSpace(caption)
-            ? "Transcript unavailable from external provider."
+            ? "Transcripción no disponible desde proveedor externo."
             : caption.Trim();
 
         return string.Join(' ', [
-            "Transcript fallback.",
+            "Transcripción alternativa.",
             normalizedCaption,
-            $"Source: {videoUrl}"
+            $"Fuente: {videoUrl}"
         ]);
     }
+
+    private sealed record InstagramFallbackPayload(
+        string Title,
+        string Description,
+        string BodyText);
 }
