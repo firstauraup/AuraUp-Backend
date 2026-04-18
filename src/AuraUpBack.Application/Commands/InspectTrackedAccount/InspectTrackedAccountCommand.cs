@@ -59,9 +59,9 @@ internal sealed class InspectTrackedAccountCommandHandler(
                     Handle = account.Handle,
                     ResearchPrompt = account.MonitoringPrompt,
                     KnownPostExternalIds = excludedExternalIds.ToArray(),
-                    StartFromPostIndex = 0,
+                    StartFromPostIndex = excludedExternalIds.Count,
                     DesiredNewPosts = batchSize,
-                    MaxDiscoveryPosts = excludedExternalIds.Count + batchSize,
+                    MaxDiscoveryPosts = excludedExternalIds.Count + (batchSize * 4),
                     JobId = command.JobId
                 },
                 cancellationToken);

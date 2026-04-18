@@ -450,7 +450,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
         var scrollAttemptsWithoutNewPosts = 0;
         var profileUrl = $"https://www.instagram.com/{handle}/reels/";
 
-        while (scrollAttemptsWithoutNewPosts < 8 && discoveredLinks.Count < maxPostsToCollect)
+        while (scrollAttemptsWithoutNewPosts < 16 && discoveredLinks.Count < maxPostsToCollect)
         {
             try
             {
@@ -496,7 +496,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     .Select(link => ExtractExternalId(link, handle, 0))
                     .Count(externalId => !knownIds.Contains(externalId));
 
-                if (newDiscoveredPosts >= desiredNewPosts && scrollPasses > 0)
+                if (newDiscoveredPosts >= desiredNewPosts && scrollPasses > 1)
                 {
                     break;
                 }
@@ -512,7 +512,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
 
                 await ScrollProfileAsync(page);
                 scrollPasses++;
-                await page.WaitForTimeoutAsync(scrollPasses <= 2 ? 2_500 : 1_500);
+                await page.WaitForTimeoutAsync(scrollPasses <= 3 ? 2_500 : 1_500);
             }
             catch (PlaywrightException exception) when (IsPageCrashException(exception))
             {
@@ -668,6 +668,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
 
         await page.Mouse.WheelAsync(0, 1800);
         await page.Mouse.WheelAsync(0, 2200);
+        await page.Mouse.WheelAsync(0, 2600);
         await page.Keyboard.PressAsync("End");
     }
 
