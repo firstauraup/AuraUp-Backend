@@ -2,6 +2,7 @@ using AuraUpBack.Application.Abstractions;
 using AuraUpBack.Application.Contracts;
 using AuraUpBack.Domain.Entities;
 using AuraUpBack.Domain.Repositories;
+using Microsoft.Extensions.Logging;
 
 namespace AuraUpBack.Application.Commands.SubmitApplicationForm;
 
@@ -14,7 +15,8 @@ public sealed record SubmitApplicationFormCommand(
 
 internal sealed class SubmitApplicationFormCommandHandler(
     IApplicationFormSubmissionRepository submissionRepository,
-    IEmailNotificationService emailNotificationService)
+    IEmailNotificationService emailNotificationService,
+    ILogger<SubmitApplicationFormCommandHandler> logger)
     : ICommandHandler<SubmitApplicationFormCommand, ApplicationFormSubmissionDto>
 {
     public async Task<ApplicationFormSubmissionDto> HandleAsync(SubmitApplicationFormCommand command, CancellationToken cancellationToken)
@@ -28,7 +30,14 @@ internal sealed class SubmitApplicationFormCommandHandler(
             DateTime.UtcNow);
 
         await submissionRepository.AddAsync(submission, cancellationToken);
-        await emailNotificationService.SendApplicationFormSubmittedAsync(submission, cancellationToken);
+        try
+        {
+            await emailNotificationService.SendApplicationFormSubmittedAsync(submission, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Application form notification email failed for submission {SubmissionId}.", submission.Id);
+        }
 
         return new ApplicationFormSubmissionDto(
             submission.Id,

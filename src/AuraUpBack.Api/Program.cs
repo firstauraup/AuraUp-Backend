@@ -276,12 +276,24 @@ app.MapPost("/api/admin/users/invitations", async (
         ? request.AssignedAccountIds?.Distinct().ToArray() ?? []
         : [];
     var invitation = await invitationService.InviteAsync(request.Email, role, accountIds, cancellationToken);
-    await userEmailService.SendInvitationAsync(
-        invitation.User.Email,
-        invitation.InvitationUrl,
-        role,
-        invitation.Invitation.ExpiresAtUtc,
-        cancellationToken);
+
+    var emailSent = true;
+    string? emailError = null;
+    try
+    {
+        await userEmailService.SendInvitationAsync(
+            invitation.User.Email,
+            invitation.InvitationUrl,
+            role,
+            invitation.Invitation.ExpiresAtUtc,
+            cancellationToken);
+    }
+    catch (Exception ex)
+    {
+        emailSent = false;
+        emailError = ex.Message;
+        app.Logger.LogWarning(ex, "Failed to send invitation email to {Email}. The invitation link is still available.", invitation.User.Email);
+    }
 
     return Results.Ok(new
     {
@@ -289,7 +301,9 @@ app.MapPost("/api/admin/users/invitations", async (
         email = invitation.User.Email,
         role = role.ToString().ToLowerInvariant(),
         invitationUrl = invitation.InvitationUrl,
-        expiresAtUtc = invitation.Invitation.ExpiresAtUtc
+        expiresAtUtc = invitation.Invitation.ExpiresAtUtc,
+        emailSent,
+        emailError
     });
 });
 
