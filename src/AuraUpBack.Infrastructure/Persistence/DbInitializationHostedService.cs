@@ -25,6 +25,7 @@ internal sealed class DbInitializationHostedService(
         await EnsureAccountMetricSnapshotsTableAsync(dbContext, cancellationToken);
         await EnsureUserTablesAsync(dbContext, cancellationToken);
         await EnsureViralIdeaTablesAsync(dbContext, cancellationToken);
+        await EnsureApplicationFormSubmissionTableAsync(dbContext, cancellationToken);
 
         if (await HasAnyDataAsync(dbContext, cancellationToken))
         {
@@ -225,6 +226,26 @@ internal sealed class DbInitializationHostedService(
                 "UpdatedAtUtc" timestamp with time zone NOT NULL
             );
             CREATE INDEX IF NOT EXISTS "IX_ViralIdeaItems_BatchId_Rank" ON "ViralIdeaItems" ("BatchId", "Rank");
+            """;
+
+        await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task EnsureApplicationFormSubmissionTableAsync(AuraUpBackDbContext dbContext, CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            CREATE TABLE IF NOT EXISTS "ApplicationFormSubmissions" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "Email" character varying(240) NOT NULL,
+                "PhoneNumber" character varying(60) NOT NULL,
+                "FullName" character varying(160) NOT NULL,
+                "CompanyName" character varying(180) NOT NULL,
+                "PrimaryNetwork" character varying(120) NOT NULL,
+                "CreatedAtUtc" timestamp with time zone NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS "IX_ApplicationFormSubmissions_CreatedAtUtc" ON "ApplicationFormSubmissions" ("CreatedAtUtc");
+            CREATE INDEX IF NOT EXISTS "IX_ApplicationFormSubmissions_Email" ON "ApplicationFormSubmissions" ("Email");
             """;
 
         await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);

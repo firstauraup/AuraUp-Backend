@@ -18,6 +18,7 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
     public DbSet<ViralIdeaItem> ViralIdeaItems => Set<ViralIdeaItem>();
     public DbSet<AlertSignal> AlertSignals => Set<AlertSignal>();
     public DbSet<InstagramConnection> InstagramConnections => Set<InstagramConnection>();
+    public DbSet<ApplicationFormSubmission> ApplicationFormSubmissions => Set<ApplicationFormSubmission>();
     public DbSet<AppUser> AppUsers => Set<AppUser>();
     public DbSet<UserInvitation> UserInvitations => Set<UserInvitation>();
     public DbSet<UserAccountAssignment> UserAccountAssignments => Set<UserAccountAssignment>();
@@ -142,6 +143,19 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
             entity.Property(x => x.VerificationUrl).HasMaxLength(1_000);
             entity.Property(x => x.LastError).HasMaxLength(4_000);
             entity.HasIndex(x => x.UpdatedAtUtc);
+        });
+
+        modelBuilder.Entity<ApplicationFormSubmission>(entity =>
+        {
+            entity.ToTable("ApplicationFormSubmissions");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Email).HasMaxLength(240).IsRequired();
+            entity.Property(x => x.PhoneNumber).HasMaxLength(60).IsRequired();
+            entity.Property(x => x.FullName).HasMaxLength(160).IsRequired();
+            entity.Property(x => x.CompanyName).HasMaxLength(180).IsRequired();
+            entity.Property(x => x.PrimaryNetwork).HasMaxLength(120).IsRequired();
+            entity.HasIndex(x => x.CreatedAtUtc);
+            entity.HasIndex(x => x.Email);
         });
 
         modelBuilder.Entity<AppUser>(entity =>

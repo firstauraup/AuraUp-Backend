@@ -17,6 +17,14 @@ internal sealed class DbAlertSignalRepository(IDbContextFactory<AuraUpBackDbCont
             .ToListAsync(cancellationToken);
     }
 
+    public async Task<bool> ExistsAsync(Guid accountId, string externalPostId, CancellationToken cancellationToken)
+    {
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await dbContext.AlertSignals.AnyAsync(
+            x => x.AccountId == accountId && x.ExternalPostId == externalPostId,
+            cancellationToken);
+    }
+
     public async Task AddAsync(AlertSignal signal, CancellationToken cancellationToken)
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);

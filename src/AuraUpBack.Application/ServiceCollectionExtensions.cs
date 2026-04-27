@@ -10,6 +10,7 @@ using AuraUpBack.Application.Commands.RegisterTrackedAccount;
 using AuraUpBack.Application.Commands.ReconnectInstagramIntegration;
 using AuraUpBack.Application.Commands.RunExplorationRequest;
 using AuraUpBack.Application.Commands.StartInstagramManualLogin;
+using AuraUpBack.Application.Commands.SubmitApplicationForm;
 using AuraUpBack.Application.Commands.TranscribeTrackedPost;
 using AuraUpBack.Application.Commands.UpdateTrackedAccountMonitoring;
 using AuraUpBack.Application.Commands.VerifyInstagramIntegrationCode;
@@ -40,6 +41,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICommandHandler<InspectTrackedAccountCommand, Contracts.TrackedAccountOverviewDto>, InspectTrackedAccountCommandHandler>();
         services.AddSingleton<ICommandHandler<ReconnectInstagramIntegrationCommand, Contracts.InstagramIntegrationDto>, ReconnectInstagramIntegrationCommandHandler>();
         services.AddSingleton<ICommandHandler<StartInstagramManualLoginCommand, Contracts.InstagramIntegrationDto>, StartInstagramManualLoginCommandHandler>();
+        services.AddSingleton<ICommandHandler<SubmitApplicationFormCommand, Contracts.ApplicationFormSubmissionDto>, SubmitApplicationFormCommandHandler>();
         services.AddSingleton<ICommandHandler<VerifyInstagramIntegrationCodeCommand, Contracts.InstagramIntegrationDto>, VerifyInstagramIntegrationCodeCommandHandler>();
         services.AddSingleton<ICommandHandler<CreateExplorationRequestCommand, Contracts.ExplorationRequestDto>, CreateExplorationRequestCommandHandler>();
         services.AddSingleton<ICommandHandler<RunExplorationRequestCommand, Contracts.ExplorationRequestDto>, RunExplorationRequestCommandHandler>();

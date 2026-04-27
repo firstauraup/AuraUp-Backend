@@ -11,6 +11,7 @@ using AuraUpBack.Application.Commands.RegisterTrackedAccount;
 using AuraUpBack.Application.Commands.ReconnectInstagramIntegration;
 using AuraUpBack.Application.Commands.RunExplorationRequest;
 using AuraUpBack.Application.Commands.StartInstagramManualLogin;
+using AuraUpBack.Application.Commands.SubmitApplicationForm;
 using AuraUpBack.Application.Commands.TranscribeTrackedPost;
 using AuraUpBack.Application.Commands.UpdateTrackedAccountMonitoring;
 using AuraUpBack.Application.Commands.VerifyInstagramIntegrationCode;
@@ -202,6 +203,30 @@ app.MapGet("/api/auth/me", async (
     return Results.Unauthorized();
 });
 
+app.MapPost("/api/forms/application", async (
+    SubmitApplicationFormRequest request,
+    ICommandDispatcher dispatcher,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await dispatcher.SendAsync(
+            new SubmitApplicationFormCommand(
+                request.Email,
+                request.PhoneNumber,
+                request.FullName,
+                request.Company,
+                request.PrimaryNetwork),
+            cancellationToken);
+
+        return Results.Ok(result);
+    }
+    catch (ArgumentException exception)
+    {
+        return Results.BadRequest(new { message = exception.Message });
+    }
+});
+
 app.MapGet("/api/admin/users", async (
     HttpContext httpContext,
     IAppUserRepository userRepository,
@@ -251,7 +276,12 @@ app.MapPost("/api/admin/users/invitations", async (
         ? request.AssignedAccountIds?.Distinct().ToArray() ?? []
         : [];
     var invitation = await invitationService.InviteAsync(request.Email, role, accountIds, cancellationToken);
-    await userEmailService.SendInvitationAsync(invitation.User.Email, invitation.InvitationUrl, role.ToString(), cancellationToken);
+    await userEmailService.SendInvitationAsync(
+        invitation.User.Email,
+        invitation.InvitationUrl,
+        role,
+        invitation.Invitation.ExpiresAtUtc,
+        cancellationToken);
 
     return Results.Ok(new
     {
@@ -261,6 +291,172 @@ app.MapPost("/api/admin/users/invitations", async (
         invitationUrl = invitation.InvitationUrl,
         expiresAtUtc = invitation.Invitation.ExpiresAtUtc
     });
+});
+
+app.MapPatch("/api/admin/users/{userId:guid}", async (
+    HttpContext httpContext,
+    Guid userId,
+    UpdateUserRequest request,
+    IAppUserRepository userRepository,
+    CancellationToken cancellationToken) =>
+{
+    var session = httpContext.RequireSession();
+    if (!session.IsAdministrator())
+    {
+        return AuthorizationExtensions.ForbidAction("Only administrators can update users.");
+    }
+
+    var user = await userRepository.GetByIdAsync(userId, cancellationToken);
+    if (user is null)
+    {
+        return Results.NotFound(new { message = "User not found." });
+    }
+
+    var nowUtc = DateTime.UtcNow;
+    if (!string.IsNullOrWhiteSpace(request.Role))
+    {
+        if (!Enum.TryParse<AppUserRole>(request.Role, true, out var role))
+        {
+            return Results.BadRequest(new { message = "Role is invalid." });
+        }
+        user.Role = role;
+    }
+
+    if (request.FirstName is not null) user.FirstName = request.FirstName.Trim();
+    if (request.LastName is not null) user.LastName = request.LastName.Trim();
+    if (request.PhoneNumber is not null) user.PhoneNumber = request.PhoneNumber.Trim();
+    if (request.CompanyName is not null) user.CompanyName = request.CompanyName.Trim();
+
+    if (request.Status is not null)
+    {
+        if (!Enum.TryParse<AppUserStatus>(request.Status, true, out var status))
+        {
+            return Results.BadRequest(new { message = "Status is invalid." });
+        }
+        user.Status = status;
+    }
+
+    if (request.AssignedAccountIds is not null)
+    {
+        var accountIds = user.Role == AppUserRole.Client
+            ? request.AssignedAccountIds.Distinct().ToArray()
+            : Array.Empty<Guid>();
+        user.UpdateAssignments(accountIds, nowUtc);
+    }
+    else if (user.Role != AppUserRole.Client && user.AssignedAccounts.Count > 0)
+    {
+        user.UpdateAssignments(Array.Empty<Guid>(), nowUtc);
+    }
+
+    user.UpdatedAtUtc = nowUtc;
+    await userRepository.UpsertAsync(user, cancellationToken);
+
+    return Results.Ok(new
+    {
+        user.Id,
+        user.Email,
+        role = user.Role.ToString().ToLowerInvariant(),
+        status = user.Status.ToString().ToLowerInvariant(),
+        user.FirstName,
+        user.LastName,
+        assignedAccountIds = user.AssignedAccounts.Select(x => x.AccountId).ToArray(),
+        user.CreatedAtUtc,
+        user.ActivatedAtUtc,
+        user.LastLoginAtUtc
+    });
+});
+
+app.MapDelete("/api/admin/users/{userId:guid}", async (
+    HttpContext httpContext,
+    Guid userId,
+    IAppUserRepository userRepository,
+    CancellationToken cancellationToken) =>
+{
+    var session = httpContext.RequireSession();
+    if (!session.IsAdministrator())
+    {
+        return AuthorizationExtensions.ForbidAction("Only administrators can delete users.");
+    }
+
+    if (session.UserId == userId)
+    {
+        return Results.BadRequest(new { message = "You cannot delete your own account." });
+    }
+
+    var user = await userRepository.GetByIdAsync(userId, cancellationToken);
+    if (user is null)
+    {
+        return Results.NotFound(new { message = "User not found." });
+    }
+
+    await userRepository.DeleteAsync(userId, cancellationToken);
+    return Results.Ok(new { id = userId });
+});
+
+app.MapGet("/api/admin/ideas", async (
+    HttpContext httpContext,
+    IViralIdeaBatchRepository viralIdeaBatchRepository,
+    CancellationToken cancellationToken) =>
+{
+    var session = httpContext.RequireSession();
+    if (!session.IsAdministrator())
+    {
+        return AuthorizationExtensions.ForbidAction("Only administrators can list all ideas.");
+    }
+
+    var batches = await viralIdeaBatchRepository.GetAllAsync(cancellationToken);
+    return Results.Ok(batches.Select(batch => ToViralIdeaBatchDto(batch)).ToList());
+});
+
+app.MapGet("/api/admin/transcripts", async (
+    HttpContext httpContext,
+    ITrackedAccountRepository trackedAccountRepository,
+    IMediaAssetStorage mediaAssetStorage,
+    CancellationToken cancellationToken) =>
+{
+    var session = httpContext.RequireSession();
+    if (!session.IsAdministrator())
+    {
+        return AuthorizationExtensions.ForbidAction("Only administrators can list all transcripts.");
+    }
+
+    var accounts = await trackedAccountRepository.GetAllAsync(cancellationToken);
+    var items = new List<TranscriptItemDto>();
+    foreach (var account in accounts)
+    {
+        foreach (var post in account.Posts.Where(p => !string.IsNullOrWhiteSpace(p.Transcript)))
+        {
+            var thumbnailUrl = await mediaAssetStorage.GetSignedPostThumbnailUrlAsync(
+                account.Id,
+                post.Id,
+                post.ThumbnailUrl,
+                post.ThumbnailObjectKey,
+                post.Url,
+                cancellationToken);
+            items.Add(new TranscriptItemDto(
+                post.Id,
+                account.Id,
+                account.Handle,
+                account.DisplayName,
+                post.ExternalId,
+                post.Caption,
+                post.Url,
+                thumbnailUrl,
+                post.PublishedAtUtc,
+                post.Views,
+                post.Likes,
+                post.Comments,
+                post.Shares,
+                post.Transcript ?? string.Empty,
+                post.Topic,
+                post.ContentAngle,
+                post.HookStyle,
+                post.ThemeSummary,
+                post.LastAnalyzedAtUtc));
+        }
+    }
+
+    return Results.Ok(items.OrderByDescending(x => x.PublishedAtUtc).ToList());
 });
 
 app.MapGet("/api/onboarding/invitations/{token}", async (
@@ -1459,10 +1655,47 @@ public sealed record LoginRequest(
     string Username,
     string Password);
 
+public sealed record SubmitApplicationFormRequest(
+    string Email,
+    string PhoneNumber,
+    string FullName,
+    string Company,
+    string PrimaryNetwork);
+
 public sealed record InviteUserRequest(
     string Email,
     string Role,
     IReadOnlyCollection<Guid>? AssignedAccountIds);
+
+public sealed record UpdateUserRequest(
+    string? Role,
+    string? Status,
+    string? FirstName,
+    string? LastName,
+    string? PhoneNumber,
+    string? CompanyName,
+    IReadOnlyCollection<Guid>? AssignedAccountIds);
+
+public sealed record TranscriptItemDto(
+    Guid PostId,
+    Guid AccountId,
+    string AccountHandle,
+    string AccountDisplayName,
+    string ExternalId,
+    string Caption,
+    string Url,
+    string ThumbnailUrl,
+    DateTime PublishedAtUtc,
+    long Views,
+    long Likes,
+    long Comments,
+    long Shares,
+    string Transcript,
+    string Topic,
+    string ContentAngle,
+    string HookStyle,
+    string ThemeSummary,
+    DateTime? LastAnalyzedAtUtc);
 
 public sealed record CompleteInvitationRequest(
     string Token,

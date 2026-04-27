@@ -14,6 +14,7 @@ internal sealed class InspectTrackedAccountCommandHandler(
     ITrackedAccountRepository trackedAccountRepository,
     IInstagramResearchAutomation instagramResearchAutomation,
     IAlertSignalRepository alertSignalRepository,
+    IEmailNotificationService emailNotificationService,
     IInspectionProgressReporter inspectionProgressReporter)
     : Abstractions.ICommandHandler<InspectTrackedAccountCommand, TrackedAccountOverviewDto>
 {
@@ -110,8 +111,10 @@ internal sealed class InspectTrackedAccountCommandHandler(
 
         if (strongestPost is not null)
         {
-            await alertSignalRepository.AddAsync(
-                new AlertSignal
+            var alertAlreadyExists = await alertSignalRepository.ExistsAsync(account.Id, strongestPost.ExternalId, cancellationToken);
+            if (!alertAlreadyExists)
+            {
+                var alert = new AlertSignal
                 {
                     AccountId = account.Id,
                     ExternalPostId = strongestPost.ExternalId,
@@ -119,8 +122,11 @@ internal sealed class InspectTrackedAccountCommandHandler(
                     Title = $"Outlier detectado en @{account.Handle}",
                     Message = $"El post {strongestPost.ExternalId} alcanzó {strongestPost.PerformanceLabel} vs el promedio.",
                     CreatedAtUtc = DateTime.UtcNow
-                },
-                cancellationToken);
+                };
+
+                await alertSignalRepository.AddAsync(alert, cancellationToken);
+                await emailNotificationService.SendViralAlertAsync(account, strongestPost, alert, cancellationToken);
+            }
         }
 
         return account.ToOverviewDto();

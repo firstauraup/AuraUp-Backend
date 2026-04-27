@@ -16,6 +16,15 @@ internal sealed class FileAlertSignalRepository(FileAuraUpBackStore store) : IAl
             cancellationToken);
     }
 
+    public Task<bool> ExistsAsync(Guid accountId, string externalPostId, CancellationToken cancellationToken)
+    {
+        return store.ReadAsync(
+            snapshot => snapshot.Alerts.Any(x =>
+                x.AccountId == accountId &&
+                string.Equals(x.ExternalPostId, externalPostId, StringComparison.OrdinalIgnoreCase)),
+            cancellationToken);
+    }
+
     public Task AddAsync(AlertSignal signal, CancellationToken cancellationToken)
     {
         return store.WriteAsync(

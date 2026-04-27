@@ -1,17 +1,21 @@
+using AuraUpBack.Application.Abstractions;
+using AuraUpBack.Domain.Enums;
 using Microsoft.Extensions.Logging;
 
 namespace AuraUpBack.Api.Auth;
 
-public sealed class UserEmailService(ILogger<UserEmailService> logger)
+public sealed class UserEmailService(
+    IEmailNotificationService emailNotificationService,
+    ILogger<UserEmailService> logger)
 {
-    public Task SendInvitationAsync(string email, string invitationUrl, string roleName, CancellationToken cancellationToken)
+    public async Task SendInvitationAsync(
+        string email,
+        string invitationUrl,
+        AppUserRole role,
+        DateTime expiresAtUtc,
+        CancellationToken cancellationToken)
     {
-        logger.LogInformation(
-            "User invitation prepared for {Email} with role {Role}. Registration URL: {InvitationUrl}",
-            email,
-            roleName,
-            invitationUrl);
-
-        return Task.CompletedTask;
+        await emailNotificationService.SendInvitationAsync(email, role, invitationUrl, expiresAtUtc, cancellationToken);
+        logger.LogInformation("Invitation email dispatched to {Email} for role {Role}.", email, role);
     }
 }

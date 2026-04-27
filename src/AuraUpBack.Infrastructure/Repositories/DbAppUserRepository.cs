@@ -77,4 +77,25 @@ internal sealed class DbAppUserRepository(IDbContextFactory<AuraUpBackDbContext>
 
         await dbContext.SaveChangesAsync(cancellationToken);
     }
+
+    public async Task DeleteAsync(Guid id, CancellationToken cancellationToken)
+    {
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var existing = await dbContext.AppUsers
+            .Include(x => x.AssignedAccounts)
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+
+        if (existing is null)
+        {
+            return;
+        }
+
+        var pendingInvitations = await dbContext.UserInvitations
+            .Where(x => x.UserId == id)
+            .ToListAsync(cancellationToken);
+        dbContext.UserInvitations.RemoveRange(pendingInvitations);
+        dbContext.UserAccountAssignments.RemoveRange(existing.AssignedAccounts);
+        dbContext.AppUsers.Remove(existing);
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
 }

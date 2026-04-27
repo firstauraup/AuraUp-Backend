@@ -7,6 +7,16 @@ namespace AuraUpBack.Infrastructure.Repositories;
 
 internal sealed class DbViralIdeaBatchRepository(IDbContextFactory<AuraUpBackDbContext> dbContextFactory) : IViralIdeaBatchRepository
 {
+    public async Task<IReadOnlyCollection<ViralIdeaBatch>> GetAllAsync(CancellationToken cancellationToken)
+    {
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await dbContext.ViralIdeaBatches
+            .AsNoTracking()
+            .Include(x => x.Ideas.OrderBy(item => item.Rank))
+            .OrderByDescending(x => x.GeneratedAtUtc)
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyCollection<ViralIdeaBatch>> GetByAccountIdAsync(Guid accountId, CancellationToken cancellationToken)
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);

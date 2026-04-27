@@ -23,6 +23,7 @@ public static class ServiceCollectionExtensions
         services.Configure<InstagramIntegrationOptions>(configuration.GetSection(InstagramIntegrationOptions.SectionName));
         services.Configure<TranscriptionOptions>(configuration.GetSection(TranscriptionOptions.SectionName));
         services.Configure<AnthropicOptions>(configuration.GetSection(AnthropicOptions.SectionName));
+        services.Configure<EmailOptions>(configuration.GetSection(EmailOptions.SectionName));
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(MinioMediaOptions.FromConfiguration(configuration)));
         services.AddMemoryCache();
 
@@ -40,6 +41,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IExplorationRequestRepository, DbExplorationRequestRepository>();
         services.AddSingleton<IViralIdeaBatchRepository, DbViralIdeaBatchRepository>();
         services.AddSingleton<IAlertSignalRepository, DbAlertSignalRepository>();
+        services.AddSingleton<IApplicationFormSubmissionRepository, DbApplicationFormSubmissionRepository>();
         services.AddSingleton<IAppUserRepository, DbAppUserRepository>();
         services.AddSingleton<IUserInvitationRepository, DbUserInvitationRepository>();
         services.AddSingleton<IInspectionJobQueue, InMemoryInspectionJobQueue>();
@@ -47,10 +49,18 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<InspectionJobRunner>();
         services.AddHostedService<InspectionJobBackgroundService>();
         services.AddHttpClient();
+        services.AddHttpClient(nameof(ResendEmailSender), client =>
+        {
+            client.BaseAddress = new Uri("https://api.resend.com/");
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
         services.AddHttpClient(nameof(AnthropicViralIdeaGenerationService), client =>
         {
             client.Timeout = Timeout.InfiniteTimeSpan;
         });
+        services.AddSingleton<IEmailTemplateRenderer, EmailTemplateRenderer>();
+        services.AddSingleton<IEmailSender, ResendEmailSender>();
+        services.AddSingleton<IEmailNotificationService, EmailNotificationService>();
         services.AddSingleton<IInstagramCredentialVault, InstagramCredentialVault>();
         services.AddSingleton<IInstagramSettingsService, InstagramSettingsService>();
         services.AddSingleton<IMediaAssetStorage, MinioMediaStorage>();

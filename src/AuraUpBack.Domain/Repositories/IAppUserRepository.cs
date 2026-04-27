@@ -8,4 +8,5 @@ public interface IAppUserRepository
     Task<AppUser?> GetByIdAsync(Guid id, CancellationToken cancellationToken);
     Task<AppUser?> GetByEmailAsync(string email, CancellationToken cancellationToken);
     Task UpsertAsync(AppUser user, CancellationToken cancellationToken);
+    Task DeleteAsync(Guid id, CancellationToken cancellationToken);
 }
