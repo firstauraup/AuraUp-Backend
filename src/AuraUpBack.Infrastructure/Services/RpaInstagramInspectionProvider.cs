@@ -450,7 +450,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
         var scrollAttemptsWithoutNewPosts = 0;
         var profileUrl = $"https://www.instagram.com/{handle}/reels/";
 
-        while (scrollAttemptsWithoutNewPosts < 16 && discoveredLinks.Count < maxPostsToCollect)
+        while (scrollAttemptsWithoutNewPosts < 100 && discoveredLinks.Count < maxPostsToCollect)
         {
             try
             {

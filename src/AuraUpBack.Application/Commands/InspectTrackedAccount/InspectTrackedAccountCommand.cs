@@ -25,11 +25,15 @@ internal sealed class InspectTrackedAccountCommandHandler(
         var account = await trackedAccountRepository.GetByIdAsync(command.AccountId, cancellationToken)
             ?? throw new InvalidOperationException("Tracked account was not found.");
 
-        const int batchSize = 12;
+        const int batchSize = 30;
+        const int maxBatches = 100;
+        const int maxConsecutiveEmptyBatches = 3;
         var nowUtc = DateTime.UtcNow;
         var totalProcessedPosts = 0;
         var totalDiscoveredPosts = 0;
         var totalNewPostsFound = 0;
+        var batchesRun = 0;
+        var consecutiveEmptyBatches = 0;
         var excludedExternalIds = new HashSet<string>(
             account.GetReels().Select(x => x.ExternalId),
             StringComparer.OrdinalIgnoreCase);
@@ -92,7 +96,23 @@ internal sealed class InspectTrackedAccountCommandHandler(
                 totalDiscoveredPosts,
                 totalNewPostsFound);
 
-            if (newlyDiscoveredCandidates < batchSize)
+            batchesRun++;
+
+            if (payload.Posts.Count == 0 && newlyDiscoveredCandidates == 0)
+            {
+                consecutiveEmptyBatches++;
+            }
+            else
+            {
+                consecutiveEmptyBatches = 0;
+            }
+
+            if (consecutiveEmptyBatches >= maxConsecutiveEmptyBatches)
+            {
+                break;
+            }
+
+            if (batchesRun >= maxBatches)
             {
                 break;
             }
