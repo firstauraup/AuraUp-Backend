@@ -5,6 +5,7 @@ using AuraUpBack.Domain.Entities;
 using AuraUpBack.Domain.Models;
 using AuraUpBack.Domain.Repositories;
 using AuraUpBack.Domain.Services;
+using Microsoft.Extensions.Logging;
 
 namespace AuraUpBack.Application.Commands.InspectTrackedAccount;
 
@@ -15,7 +16,8 @@ internal sealed class InspectTrackedAccountCommandHandler(
     IInstagramResearchAutomation instagramResearchAutomation,
     IAlertSignalRepository alertSignalRepository,
     IEmailNotificationService emailNotificationService,
-    IInspectionProgressReporter inspectionProgressReporter)
+    IInspectionProgressReporter inspectionProgressReporter,
+    ILogger<InspectTrackedAccountCommandHandler> logger)
     : Abstractions.ICommandHandler<InspectTrackedAccountCommand, TrackedAccountOverviewDto>
 {
     public async Task<TrackedAccountOverviewDto> HandleAsync(InspectTrackedAccountCommand command, CancellationToken cancellationToken)
@@ -125,7 +127,14 @@ internal sealed class InspectTrackedAccountCommandHandler(
                 };
 
                 await alertSignalRepository.AddAsync(alert, cancellationToken);
-                await emailNotificationService.SendViralAlertAsync(account, strongestPost, alert, cancellationToken);
+                try
+                {
+                    await emailNotificationService.SendViralAlertAsync(account, strongestPost, alert, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Viral alert email failed for account {AccountId} post {PostId}.", account.Id, strongestPost.Id);
+                }
             }
         }
 
