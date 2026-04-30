@@ -855,8 +855,11 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 try
                 {
                     var url = response.Url;
-                    if (!url.Contains("/api/v1/media/", StringComparison.OrdinalIgnoreCase) ||
-                        !url.Contains("/info", StringComparison.OrdinalIgnoreCase))
+                    var isMediaInfo = url.Contains("/api/v1/media/", StringComparison.OrdinalIgnoreCase)
+                                      && url.Contains("/info", StringComparison.OrdinalIgnoreCase);
+                    var isPolarisQuery = url.Contains("/graphql/query", StringComparison.OrdinalIgnoreCase)
+                                         || url.Contains("PolarisPostRootQuery", StringComparison.OrdinalIgnoreCase);
+                    if (!isMediaInfo && !isPolarisQuery)
                     {
                         return;
                     }
@@ -919,6 +922,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                       let views = 0;
                       let plays = 0;
                       let shares = 0;
+                      let mediaPk = '';
 
                       // Try GraphQL/embedded JSON (most reliable when present).
                       try {
@@ -930,10 +934,12 @@ internal sealed partial class RpaInstagramInspectionProvider(
                           const playMatch = text.match(/"video_play_count"\s*:\s*(\d+)/) || text.match(/"play_count"\s*:\s*(\d+)/);
                           const likeMatch = text.match(/"edge_media_preview_like"\s*:\s*\{\s*"count"\s*:\s*(\d+)/) || text.match(/"like_count"\s*:\s*(\d+)/);
                           const commentMatch = text.match(/"edge_media_to_(?:parent_)?comment"\s*:\s*\{\s*"count"\s*:\s*(\d+)/) || text.match(/"comment_count"\s*:\s*(\d+)/);
+                          const pkMatch = text.match(/"media_id"\s*:\s*"(\d+)"/) || text.match(/"pk"\s*:\s*"(\d{10,})"/);
                           if (viewMatch && !views) views = parseInt(viewMatch[1], 10);
                           if (playMatch && !plays) plays = parseInt(playMatch[1], 10);
                           if (likeMatch && !likes) likes = parseInt(likeMatch[1], 10);
                           if (commentMatch && !comments) comments = parseInt(commentMatch[1], 10);
+                          if (pkMatch && !mediaPk) mediaPk = pkMatch[1];
                         }
                       } catch (_) { /* ignore */ }
 
@@ -989,7 +995,8 @@ internal sealed partial class RpaInstagramInspectionProvider(
                         domViews: effectiveViews,
                         domLikes: likes,
                         domComments: comments,
-                        domShares: shares
+                        domShares: shares,
+                        mediaPk
                       });
                     }
                     """);
@@ -1035,6 +1042,11 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 long fbPlayCount = 0;
                 long fbLikes = 0;
                 long fbComments = 0;
+
+                if (mediaInfoPayload is null && !string.IsNullOrWhiteSpace(snapshot.MediaPk))
+                {
+                    mediaInfoPayload = await TryFetchMediaInfoAsync(page, snapshot.MediaPk);
+                }
 
                 if (mediaInfoPayload is not null)
                 {
@@ -1548,6 +1560,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
         public long DomLikes { get; set; }
         public long DomComments { get; set; }
         public long DomShares { get; set; }
+        public string MediaPk { get; set; } = string.Empty;
     }
 
     private sealed record MediaInfoApiPayload(
@@ -1559,6 +1572,40 @@ internal sealed partial class RpaInstagramInspectionProvider(
         long FbPlayCount,
         long FbLikeCount,
         long FbCommentCount);
+
+    private async Task<MediaInfoApiPayload?> TryFetchMediaInfoAsync(IPage page, string mediaPk)
+    {
+        try
+        {
+            var script = $$"""
+            async () => {
+              try {
+                const res = await fetch('/api/v1/media/{{mediaPk}}/info/', {
+                  method: 'GET',
+                  credentials: 'include',
+                  headers: {
+                    'X-IG-App-ID': '936619743392459',
+                    'X-ASBD-ID': '129477',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': '*/*'
+                  }
+                });
+                if (!res.ok) return '';
+                return await res.text();
+              } catch (e) {
+                return '';
+              }
+            }
+            """;
+            var body = await page.EvaluateAsync<string>(script);
+            return ParseMediaInfoApiPayload(body ?? string.Empty);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Direct media/info fetch failed for pk {Pk}", mediaPk);
+            return null;
+        }
+    }
 
     private static MediaInfoApiPayload? ParseMediaInfoApiPayload(string body)
     {
