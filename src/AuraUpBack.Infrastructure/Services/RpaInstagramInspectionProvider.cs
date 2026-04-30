@@ -1058,6 +1058,11 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     fbPlayCount = mediaInfoPayload.FbPlayCount;
                     fbLikes = mediaInfoPayload.FbLikeCount;
                     fbComments = mediaInfoPayload.FbCommentCount;
+                    if (!string.IsNullOrWhiteSpace(mediaInfoPayload.CaptionText))
+                    {
+                        caption = mediaInfoPayload.CaptionText.Trim();
+                        classification = PostTopicClassifier.Classify(caption, snapshot.BodyText);
+                    }
                 }
 
                 logger.LogInformation(
@@ -1073,9 +1078,11 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     fbComments,
                     mediaInfoPayload is not null);
 
-                var publishedAtUtc = DateTime.TryParse(snapshot.TimeValue, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var parsedDate)
-                    ? parsedDate
-                    : DateTime.UtcNow.AddDays(-(index + 1) * 3);
+                var publishedAtUtc = mediaInfoPayload is { TakenAt: > 0 }
+                    ? DateTimeOffset.FromUnixTimeSeconds(mediaInfoPayload.TakenAt).UtcDateTime
+                    : DateTime.TryParse(snapshot.TimeValue, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var parsedDate)
+                        ? parsedDate
+                        : DateTime.UtcNow.AddDays(-(index + 1) * 3);
 
                 return new InspectedPostPayload
                 {
@@ -1571,7 +1578,9 @@ internal sealed partial class RpaInstagramInspectionProvider(
         long IgPlayCount,
         long FbPlayCount,
         long FbLikeCount,
-        long FbCommentCount);
+        long FbCommentCount,
+        string CaptionText,
+        long TakenAt);
 
     private async Task<MediaInfoApiPayload?> TryFetchMediaInfoAsync(IPage page, string mediaPk)
     {
@@ -1641,6 +1650,15 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 };
             }
 
+            string captionText = string.Empty;
+            if (item.TryGetProperty("caption", out var caption) &&
+                caption.ValueKind == JsonValueKind.Object &&
+                caption.TryGetProperty("text", out var capText) &&
+                capText.ValueKind == JsonValueKind.String)
+            {
+                captionText = capText.GetString() ?? string.Empty;
+            }
+
             return new MediaInfoApiPayload(
                 LikeCount: ReadLong(item, "like_count"),
                 CommentCount: ReadLong(item, "comment_count"),
@@ -1649,7 +1667,9 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 IgPlayCount: ReadLong(item, "ig_play_count"),
                 FbPlayCount: ReadLong(item, "fb_play_count"),
                 FbLikeCount: ReadLong(item, "fb_like_count"),
-                FbCommentCount: ReadLong(item, "fb_comment_count"));
+                FbCommentCount: ReadLong(item, "fb_comment_count"),
+                CaptionText: captionText,
+                TakenAt: ReadLong(item, "taken_at"));
         }
         catch (JsonException)
         {

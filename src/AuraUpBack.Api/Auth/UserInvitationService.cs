@@ -41,7 +41,7 @@ public sealed class UserInvitationService(
             nowUtc);
         await invitationRepository.AddAsync(invitation, cancellationToken);
 
-        var invitationUrl = $"{_options.PublicAppUrl.TrimEnd('/')}/register?token={token}";
+        var invitationUrl = $"{_options.PublicAppUrl.TrimEnd('/')}/register/?token={token}";
         return new InvitationIssueResult(user, invitation, invitationUrl);
     }
 
