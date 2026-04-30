@@ -873,6 +873,84 @@ internal sealed partial class RpaInstagramInspectionProvider(
                       const hasPlayButton = !!document.querySelector("svg[aria-label='Play'], svg[aria-label='Reproducir']");
                       const pageUrl = window.location.href;
 
+                      const parseCount = (raw) => {
+                        if (!raw) return 0;
+                        const cleaned = String(raw).replace(/[\s,   ]/g, '').toLowerCase();
+                        const m = cleaned.match(/^([\d.]+)([kmb])?$/);
+                        if (!m) {
+                          const digits = cleaned.match(/\d+/);
+                          return digits ? parseInt(digits[0], 10) : 0;
+                        }
+                        const value = parseFloat(m[1]);
+                        const suffix = m[2];
+                        if (suffix === 'k') return Math.round(value * 1_000);
+                        if (suffix === 'm') return Math.round(value * 1_000_000);
+                        if (suffix === 'b') return Math.round(value * 1_000_000_000);
+                        return Math.round(value);
+                      };
+
+                      let likes = 0;
+                      let comments = 0;
+                      let views = 0;
+                      let plays = 0;
+                      let shares = 0;
+
+                      // Try GraphQL/embedded JSON (most reliable when present).
+                      try {
+                        const scripts = Array.from(document.querySelectorAll('script[type="application/json"], script[type="application/ld+json"]'));
+                        for (const script of scripts) {
+                          const text = script.textContent || '';
+                          if (!text) continue;
+                          const viewMatch = text.match(/"video_view_count"\s*:\s*(\d+)/);
+                          const playMatch = text.match(/"video_play_count"\s*:\s*(\d+)/) || text.match(/"play_count"\s*:\s*(\d+)/);
+                          const likeMatch = text.match(/"edge_media_preview_like"\s*:\s*\{\s*"count"\s*:\s*(\d+)/) || text.match(/"like_count"\s*:\s*(\d+)/);
+                          const commentMatch = text.match(/"edge_media_to_(?:parent_)?comment"\s*:\s*\{\s*"count"\s*:\s*(\d+)/) || text.match(/"comment_count"\s*:\s*(\d+)/);
+                          if (viewMatch && !views) views = parseInt(viewMatch[1], 10);
+                          if (playMatch && !plays) plays = parseInt(playMatch[1], 10);
+                          if (likeMatch && !likes) likes = parseInt(likeMatch[1], 10);
+                          if (commentMatch && !comments) comments = parseInt(commentMatch[1], 10);
+                        }
+                      } catch (_) { /* ignore */ }
+
+                      // DOM fallback: scan visible text for "N views/plays/likes/comments".
+                      const allText = bodyText.replace(/ /g, ' ');
+                      if (!views) {
+                        const m = allText.match(/([\d.,]+\s*[KkMmBb]?)\s*(?:views|reproducciones|visualizaciones)/i);
+                        if (m) views = parseCount(m[1]);
+                      }
+                      if (!plays) {
+                        const m = allText.match(/([\d.,]+\s*[KkMmBb]?)\s*(?:plays|reproducciones)/i);
+                        if (m) plays = parseCount(m[1]);
+                      }
+                      if (!likes) {
+                        // "Liked by user and 1,234 others" or "1,234 likes".
+                        const m = allText.match(/([\d.,]+\s*[KkMmBb]?)\s*(?:likes|me gusta|others|otras personas|más)/i);
+                        if (m) likes = parseCount(m[1]);
+                        if (!likes) {
+                          const likedByLink = document.querySelector('a[href$="/liked_by/"]');
+                          if (likedByLink) likes = parseCount(likedByLink.textContent || '');
+                        }
+                      }
+                      if (!comments) {
+                        const m = allText.match(/(?:View all\s+|Ver los\s+|Ver todos los\s+)?([\d.,]+\s*[KkMmBb]?)\s*comment(?:s|arios)?/i);
+                        if (m) comments = parseCount(m[1]);
+                      }
+                      if (!shares) {
+                        const m = allText.match(/([\d.,]+\s*[KkMmBb]?)\s*(?:shares?|compartidos?|veces compartido)/i);
+                        if (m) shares = parseCount(m[1]);
+                      }
+
+                      // Aria-label fallback on like/comment buttons.
+                      if (!likes) {
+                        const likeBtn = document.querySelector('svg[aria-label="Like"], svg[aria-label="Me gusta"]');
+                        const labelHost = likeBtn?.closest('section, div')?.textContent || '';
+                        const m = labelHost.match(/([\d.,]+\s*[KkMmBb]?)\s*(?:likes|me gusta)/i);
+                        if (m) likes = parseCount(m[1]);
+                      }
+
+                      // Effective views: prefer view_count, then play_count.
+                      const effectiveViews = views || plays;
+
                       return JSON.stringify({
                         ogTitle,
                         ogDescription,
@@ -882,7 +960,11 @@ internal sealed partial class RpaInstagramInspectionProvider(
                         timeValue,
                         hasVideoElement,
                         hasPlayButton,
-                        pageUrl
+                        pageUrl,
+                        domViews: effectiveViews,
+                        domLikes: likes,
+                        domComments: comments,
+                        domShares: shares
                       });
                     }
                     """);
@@ -904,21 +986,36 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 var canonicalUrl = NormalizeInstagramPostUrl(snapshot.PageUrl, postUrl, externalId);
                 var caption = ExtractCaption(snapshot.OgTitle, snapshot.OgDescription, snapshot.BodyText, handle, index);
                 var classification = PostTopicClassifier.Classify(caption, snapshot.BodyText);
-                var likes = TryParseMetric(snapshot.OgDescription, "likes");
-                var comments = TryParseMetric(snapshot.OgDescription, "comments");
-                var shares = Math.Max(
-                    TryParseMetric(snapshot.BodyText, "shares"),
-                    TryParseMetric(snapshot.BodyText, "shared"));
-                var views = Math.Max(TryParseMetric(snapshot.BodyText, "views"), likes > 0 ? likes * 8 : 0);
-                if (views == 0)
-                {
-                    views = Math.Max(3_000, likes * 10 + 2_500);
-                }
 
-                if (comments == 0)
-                {
-                    comments = Math.Max(18, likes / 18);
-                }
+                // Prefer DOM/embedded JSON metrics extracted in-page. Fall back to OG description
+                // text parsing only as a last resort. Never invent values — return 0 if unknown.
+                var likes = snapshot.DomLikes > 0
+                    ? snapshot.DomLikes
+                    : TryParseMetric(snapshot.OgDescription, "likes");
+                var comments = snapshot.DomComments > 0
+                    ? snapshot.DomComments
+                    : TryParseMetric(snapshot.OgDescription, "comments");
+                var views = snapshot.DomViews > 0
+                    ? snapshot.DomViews
+                    : Math.Max(
+                        TryParseMetric(snapshot.OgDescription, "views"),
+                        TryParseMetric(snapshot.BodyText, "views"));
+                var shares = snapshot.DomShares > 0
+                    ? snapshot.DomShares
+                    : Math.Max(
+                        TryParseMetric(snapshot.BodyText, "shares"),
+                        TryParseMetric(snapshot.BodyText, "shared"));
+
+                logger.LogInformation(
+                    "RPA reel metrics for {PostUrl}: views={Views}, likes={Likes}, comments={Comments}, shares={Shares} (dom views={DomViews}, dom likes={DomLikes}, dom comments={DomComments})",
+                    canonicalUrl,
+                    views,
+                    likes,
+                    comments,
+                    shares,
+                    snapshot.DomViews,
+                    snapshot.DomLikes,
+                    snapshot.DomComments);
 
                 var publishedAtUtc = DateTime.TryParse(snapshot.TimeValue, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var parsedDate)
                     ? parsedDate
@@ -933,9 +1030,9 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     ThumbnailUrl = snapshot.OgImage,
                     PublishedAtUtc = publishedAtUtc,
                     Views = views,
-                    Likes = Math.Max(likes, 100),
+                    Likes = likes,
                     Comments = comments,
-                    Shares = shares == 0 ? Math.Max(0, likes / 40) : shares,
+                    Shares = shares,
                     Topic = classification.Topic,
                     TopicConfidence = classification.TopicConfidence,
                     ContentAngle = classification.ContentAngle,
@@ -1399,5 +1496,9 @@ internal sealed partial class RpaInstagramInspectionProvider(
         public bool HasVideoElement { get; set; }
         public bool HasPlayButton { get; set; }
         public string PageUrl { get; set; } = string.Empty;
+        public long DomViews { get; set; }
+        public long DomLikes { get; set; }
+        public long DomComments { get; set; }
+        public long DomShares { get; set; }
     }
 }
