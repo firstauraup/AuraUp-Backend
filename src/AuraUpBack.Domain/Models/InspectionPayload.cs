@@ -24,6 +24,10 @@ public sealed class InspectedPostPayload
     public long Likes { get; set; }
     public long Comments { get; set; }
     public long Shares { get; set; }
+    public long IgPlayCount { get; set; }
+    public long FbPlayCount { get; set; }
+    public long FbLikes { get; set; }
+    public long FbComments { get; set; }
     public string Topic { get; set; } = string.Empty;
     public decimal TopicConfidence { get; set; }
     public string ContentAngle { get; set; } = string.Empty;

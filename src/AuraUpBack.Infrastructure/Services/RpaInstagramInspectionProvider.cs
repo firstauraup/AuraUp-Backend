@@ -848,6 +848,31 @@ internal sealed partial class RpaInstagramInspectionProvider(
         for (var attempt = 1; attempt <= 2; attempt++)
         {
             var page = await context.NewPageAsync();
+            MediaInfoApiPayload? mediaInfoPayload = null;
+
+            page.Response += async (_, response) =>
+            {
+                try
+                {
+                    var url = response.Url;
+                    if (!url.Contains("/api/v1/media/", StringComparison.OrdinalIgnoreCase) ||
+                        !url.Contains("/info", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+
+                    var body = await response.TextAsync();
+                    var parsed = ParseMediaInfoApiPayload(body);
+                    if (parsed is not null)
+                    {
+                        mediaInfoPayload = parsed;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogDebug(ex, "Failed to capture media/info response for {PostUrl}", postUrl);
+                }
+            };
 
             try
             {
@@ -858,7 +883,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 });
                 await EnsureStillAuthenticatedAsync(page);
 
-                await page.WaitForTimeoutAsync(1_500);
+                await page.WaitForTimeoutAsync(2_500);
 
                 var snapshotJson = await page.EvaluateAsync<string>(
                     """
@@ -1006,16 +1031,35 @@ internal sealed partial class RpaInstagramInspectionProvider(
                         TryParseMetric(snapshot.BodyText, "shares"),
                         TryParseMetric(snapshot.BodyText, "shared"));
 
+                long igPlayCount = 0;
+                long fbPlayCount = 0;
+                long fbLikes = 0;
+                long fbComments = 0;
+
+                if (mediaInfoPayload is not null)
+                {
+                    likes = mediaInfoPayload.LikeCount;
+                    comments = mediaInfoPayload.CommentCount;
+                    shares = mediaInfoPayload.ShareCount;
+                    views = mediaInfoPayload.PlayCount;
+                    igPlayCount = mediaInfoPayload.IgPlayCount;
+                    fbPlayCount = mediaInfoPayload.FbPlayCount;
+                    fbLikes = mediaInfoPayload.FbLikeCount;
+                    fbComments = mediaInfoPayload.FbCommentCount;
+                }
+
                 logger.LogInformation(
-                    "RPA reel metrics for {PostUrl}: views={Views}, likes={Likes}, comments={Comments}, shares={Shares} (dom views={DomViews}, dom likes={DomLikes}, dom comments={DomComments})",
+                    "RPA reel metrics for {PostUrl}: views={Views}, likes={Likes}, comments={Comments}, shares={Shares} igPlay={IgPlay} fbPlay={FbPlay} fbLikes={FbLikes} fbComments={FbComments} (api={HasApi})",
                     canonicalUrl,
                     views,
                     likes,
                     comments,
                     shares,
-                    snapshot.DomViews,
-                    snapshot.DomLikes,
-                    snapshot.DomComments);
+                    igPlayCount,
+                    fbPlayCount,
+                    fbLikes,
+                    fbComments,
+                    mediaInfoPayload is not null);
 
                 var publishedAtUtc = DateTime.TryParse(snapshot.TimeValue, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var parsedDate)
                     ? parsedDate
@@ -1033,6 +1077,10 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     Likes = likes,
                     Comments = comments,
                     Shares = shares,
+                    IgPlayCount = igPlayCount,
+                    FbPlayCount = fbPlayCount,
+                    FbLikes = fbLikes,
+                    FbComments = fbComments,
                     Topic = classification.Topic,
                     TopicConfidence = classification.TopicConfidence,
                     ContentAngle = classification.ContentAngle,
@@ -1500,5 +1548,65 @@ internal sealed partial class RpaInstagramInspectionProvider(
         public long DomLikes { get; set; }
         public long DomComments { get; set; }
         public long DomShares { get; set; }
+    }
+
+    private sealed record MediaInfoApiPayload(
+        long LikeCount,
+        long CommentCount,
+        long ShareCount,
+        long PlayCount,
+        long IgPlayCount,
+        long FbPlayCount,
+        long FbLikeCount,
+        long FbCommentCount);
+
+    private static MediaInfoApiPayload? ParseMediaInfoApiPayload(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("items", out var items) ||
+                items.ValueKind != JsonValueKind.Array ||
+                items.GetArrayLength() == 0)
+            {
+                return null;
+            }
+
+            var item = items[0];
+
+            static long ReadLong(JsonElement parent, string name)
+            {
+                if (!parent.TryGetProperty(name, out var prop))
+                {
+                    return 0;
+                }
+
+                return prop.ValueKind switch
+                {
+                    JsonValueKind.Number when prop.TryGetInt64(out var v) => v,
+                    JsonValueKind.String when long.TryParse(prop.GetString(), out var v) => v,
+                    _ => 0
+                };
+            }
+
+            return new MediaInfoApiPayload(
+                LikeCount: ReadLong(item, "like_count"),
+                CommentCount: ReadLong(item, "comment_count"),
+                ShareCount: ReadLong(item, "media_repost_count"),
+                PlayCount: ReadLong(item, "play_count"),
+                IgPlayCount: ReadLong(item, "ig_play_count"),
+                FbPlayCount: ReadLong(item, "fb_play_count"),
+                FbLikeCount: ReadLong(item, "fb_like_count"),
+                FbCommentCount: ReadLong(item, "fb_comment_count"));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 }

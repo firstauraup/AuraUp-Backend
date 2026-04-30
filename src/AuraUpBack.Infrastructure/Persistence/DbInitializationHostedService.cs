@@ -22,6 +22,7 @@ internal sealed class DbInitializationHostedService(
         await EnsureTrackedPostsMediaColumnsAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsIsReelColumnAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsSharesColumnAsync(dbContext, cancellationToken);
+        await EnsureTrackedPostsSplitMetricsColumnsAsync(dbContext, cancellationToken);
         await EnsureAccountMetricSnapshotsTableAsync(dbContext, cancellationToken);
         await EnsureUserTablesAsync(dbContext, cancellationToken);
         await EnsureViralIdeaTablesAsync(dbContext, cancellationToken);
@@ -128,6 +129,19 @@ internal sealed class DbInitializationHostedService(
         const string sql =
             """
             ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "Shares" bigint NOT NULL DEFAULT 0;
+            """;
+
+        await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task EnsureTrackedPostsSplitMetricsColumnsAsync(AuraUpBackDbContext dbContext, CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "IgPlayCount" bigint NOT NULL DEFAULT 0;
+            ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "FbPlayCount" bigint NOT NULL DEFAULT 0;
+            ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "FbLikes" bigint NOT NULL DEFAULT 0;
+            ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "FbComments" bigint NOT NULL DEFAULT 0;
             """;
 
         await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);

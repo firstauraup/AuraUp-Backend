@@ -16,6 +16,10 @@ public sealed class TrackedPost
     public long Likes { get; set; }
     public long Comments { get; set; }
     public long Shares { get; set; }
+    public long IgPlayCount { get; set; }
+    public long FbPlayCount { get; set; }
+    public long FbLikes { get; set; }
+    public long FbComments { get; set; }
     public decimal PerformanceMultiplier { get; set; } = 1m;
     public bool IsOutlier { get; set; }
     public string PerformanceLabel { get; set; } = "baseline";
@@ -43,6 +47,10 @@ public sealed class TrackedPost
         long likes,
         long comments,
         long shares,
+        long igPlayCount,
+        long fbPlayCount,
+        long fbLikes,
+        long fbComments,
         string topic,
         decimal topicConfidence,
         string contentAngle,
@@ -59,6 +67,10 @@ public sealed class TrackedPost
         Likes = likes;
         Comments = comments;
         Shares = shares;
+        IgPlayCount = igPlayCount;
+        FbPlayCount = fbPlayCount;
+        FbLikes = fbLikes;
+        FbComments = fbComments;
         Topic = topic;
         TopicConfidence = topicConfidence;
         ContentAngle = contentAngle;
