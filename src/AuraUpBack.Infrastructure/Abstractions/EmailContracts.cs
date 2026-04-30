@@ -19,6 +19,7 @@ public sealed record EmailMessage(
     string Subject,
     string Html,
     string Text,
-    IReadOnlyCollection<EmailTag>? Tags = null);
+    IReadOnlyCollection<EmailTag>? Tags = null,
+    IReadOnlyDictionary<string, string>? Headers = null);
 
 public sealed record EmailTag(string Name, string Value);

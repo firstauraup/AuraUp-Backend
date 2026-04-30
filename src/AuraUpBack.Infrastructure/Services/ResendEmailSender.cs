@@ -40,7 +40,8 @@ internal sealed class ResendEmailSender(
                 html = message.Html,
                 text = message.Text,
                 reply_to = string.IsNullOrWhiteSpace(_options.ReplyTo) ? null : new[] { _options.ReplyTo.Trim() },
-                tags = message.Tags?.Select(x => new { name = x.Name, value = x.Value }).ToArray()
+                tags = message.Tags?.Select(x => new { name = x.Name, value = x.Value }).ToArray(),
+                headers = message.Headers
             })
         };
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _options.ApiKey.Trim());

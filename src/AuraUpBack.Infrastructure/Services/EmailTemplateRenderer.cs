@@ -13,7 +13,7 @@ internal sealed class EmailTemplateRenderer : IEmailTemplateRenderer
         var rows = new[]
         {
             BuildRow("Email", submission.Email),
-            BuildRow("Telefono", submission.PhoneNumber),
+            BuildRow("Teléfono", submission.PhoneNumber),
             BuildRow("Nombre completo", submission.FullName),
             BuildRow("Empresa", submission.CompanyName),
             BuildRow("Red principal", submission.PrimaryNetwork),
@@ -22,15 +22,15 @@ internal sealed class EmailTemplateRenderer : IEmailTemplateRenderer
 
         var html = BuildShell(
             badge: "Nuevo formulario",
-            title: "Llego una nueva solicitud desde la web",
-            intro: "Este lead completo el formulario principal de AuraUp. Revisa los datos y da seguimiento cuanto antes.",
+            title: "Llegó una nueva solicitud desde la web",
+            intro: "Este lead completó el formulario principal de AuraUp. Revisa los datos y da seguimiento cuanto antes.",
             body: BuildTable(rows));
 
         var text = $"""
         Nuevo formulario recibido en AuraUp
 
         Email: {submission.Email}
-        Telefono: {submission.PhoneNumber}
+        Teléfono: {submission.PhoneNumber}
         Nombre completo: {submission.FullName}
         Empresa: {submission.CompanyName}
         Red principal: {submission.PrimaryNetwork}
@@ -43,8 +43,8 @@ internal sealed class EmailTemplateRenderer : IEmailTemplateRenderer
     public RenderedEmail RenderInvitationEmail(string email, string roleLabel, string invitationUrl, DateTime expiresAtUtc)
     {
         var body = new StringBuilder();
-        body.AppendLine("<p class=\"intro\">Te invitaron a AuraUp como <strong>" + Encode(roleLabel) + "</strong>. Usa el boton para completar tu registro y terminar tu perfil.</p>");
-        body.AppendLine(BuildCallout("Acceso listo", "Este enlace te lleva directo al onboarding para completar tus datos y definir tu contrasena."));
+        body.AppendLine("<p class=\"intro\">Te invitaron a AuraUp como <strong>" + Encode(roleLabel) + "</strong>. Usa el botón para completar tu registro y terminar tu perfil.</p>");
+        body.AppendLine(BuildCallout("Acceso listo", "Este enlace te lleva directo al onboarding para completar tus datos y definir tu contraseña."));
         body.AppendLine(BuildButton(invitationUrl, "Completar registro"));
         body.AppendLine(BuildMetaList(new[]
         {
@@ -54,17 +54,17 @@ internal sealed class EmailTemplateRenderer : IEmailTemplateRenderer
         }));
 
         var html = BuildShell(
-            badge: "Invitacion AuraUp",
-            title: "Tu acceso ya esta listo",
+            badge: "Invitación AuraUp",
+            title: "Tu acceso ya está listo",
             intro: null,
             body: body.ToString());
 
         var text = $"""
-        Tu acceso a AuraUp ya esta listo
+        Tu acceso a AuraUp ya está listo
 
         Rol: {roleLabel}
         Correo: {email}
-        Completa tu registro aqui: {invitationUrl}
+        Completa tu registro aquí: {invitationUrl}
         Expira: {FormatDate(expiresAtUtc)}
         """;
 
@@ -74,7 +74,7 @@ internal sealed class EmailTemplateRenderer : IEmailTemplateRenderer
     public RenderedEmail RenderViralAlertEmail(TrackedAccount account, TrackedPost post, AlertSignal alert)
     {
         var body = new StringBuilder();
-        body.AppendLine("<p class=\"intro\">Se detecto un reel con comportamiento fuera de rango en una cuenta monitoreada. Tienes el resumen listo para revisar y actuar rapido.</p>");
+        body.AppendLine("<p class=\"intro\">Se detectó un reel con comportamiento fuera de rango en una cuenta monitoreada. Tienes el resumen listo para revisar y actuar rápido.</p>");
         body.AppendLine(BuildCallout("Cuenta", "@" + Encode(account.Handle)));
         body.AppendLine(BuildMetricsGrid(new[]
         {

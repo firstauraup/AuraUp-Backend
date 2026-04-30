@@ -60,8 +60,8 @@ public sealed class UserInvitationService(
         }
 
         return new InvitationView(
-            user.Email,
-            user.Role,
+            invitation.Email,
+            invitation.Role,
             invitation.ExpiresAtUtc,
             invitation.AcceptedAtUtc,
             invitation.CanBeAccepted(DateTime.UtcNow));
@@ -89,6 +89,7 @@ public sealed class UserInvitationService(
         var user = await userRepository.GetByIdAsync(invitation.UserId, cancellationToken)
             ?? throw new InvalidOperationException("Invited user was not found.");
 
+        user.Role = invitation.Role;
         user.Activate(
             firstName,
             lastName,
