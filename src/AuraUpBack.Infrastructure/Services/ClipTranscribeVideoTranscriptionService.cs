@@ -1468,9 +1468,9 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     return rect.width > 0 && rect.height > 0;
                   };
 
-                  const candidates = Array.from(document.querySelectorAll('dialog, [role="dialog"], form, main, section, div'))
+                  const candidates = Array.from(document.querySelectorAll('dialog, [role="dialog"], form'))
                     .filter((element) => visible(element))
-                    .slice(0, 200);
+                    .slice(0, 50);
 
                   return candidates.some((element) => {
                     const text = (element.textContent || '').trim().toLowerCase();
