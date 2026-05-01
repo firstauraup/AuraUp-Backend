@@ -941,13 +941,15 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 {
                     nextProgressLogAtUtc = DateTime.UtcNow.AddSeconds(ProgressLogIntervalSeconds);
                     var diagnosticState = await ReadDiagnosticStateAsync(page);
+                    var screenshotPath = await TrySaveDebugScreenshotAsync(page, "processing");
                     logger.LogInformation(
-                        "ClipTranscribe sigue procesando {VideoUrl}. ElapsedSeconds: {ElapsedSeconds:0}. UrlValue: {UrlValue}. CopyButtons: {CopyButtonCount}. Body: {BodySnippet}",
+                        "ClipTranscribe sigue procesando {VideoUrl}. ElapsedSeconds: {ElapsedSeconds:0}. UrlValue: {UrlValue}. CopyButtons: {CopyButtonCount}. Body: {BodySnippet}. Screenshot: {Screenshot}",
                         videoUrl,
                         elapsedSeconds,
                         diagnosticState.UrlValue,
                         diagnosticState.CopyButtonCount,
-                        diagnosticState.BodySnippet);
+                        diagnosticState.BodySnippet,
+                        screenshotPath);
                 }
 
                 await Task.Delay(1_000, cancellationToken);
@@ -958,13 +960,15 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             {
                 nextProgressLogAtUtc = DateTime.UtcNow.AddSeconds(ProgressLogIntervalSeconds);
                 var diagnosticState = await ReadDiagnosticStateAsync(page);
+                var screenshotPath = await TrySaveDebugScreenshotAsync(page, "no-text");
                 logger.LogInformation(
-                    "ClipTranscribe sigue sin texto para {VideoUrl}. ElapsedSeconds: {ElapsedSeconds:0}. UrlValue: {UrlValue}. CopyButtons: {CopyButtonCount}. Body: {BodySnippet}",
+                    "ClipTranscribe sigue sin texto para {VideoUrl}. ElapsedSeconds: {ElapsedSeconds:0}. UrlValue: {UrlValue}. CopyButtons: {CopyButtonCount}. Body: {BodySnippet}. Screenshot: {Screenshot}",
                     videoUrl,
                     elapsedSeconds,
                     diagnosticState.UrlValue,
                     diagnosticState.CopyButtonCount,
-                    diagnosticState.BodySnippet);
+                    diagnosticState.BodySnippet,
+                    screenshotPath);
             }
 
             if (await IsAuthenticationWallAsync(page))
@@ -1463,6 +1467,28 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         catch (PlaywrightException)
         {
             return string.Empty;
+        }
+    }
+
+    private async Task<string> TrySaveDebugScreenshotAsync(IPage page, string label)
+    {
+        try
+        {
+            var dir = Path.Combine(AppContext.BaseDirectory, "App_Data", "cliptranscribe-debug");
+            Directory.CreateDirectory(dir);
+            var fileName = $"{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}-{label}.png";
+            var fullPath = Path.Combine(dir, fileName);
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = fullPath,
+                FullPage = true
+            });
+            return fullPath;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to save debug screenshot.");
+            return "(failed)";
         }
     }
 
