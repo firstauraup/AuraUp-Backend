@@ -965,9 +965,11 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     var diagnosticState = await ReadDiagnosticStateAsync(page);
                     var screenshotPath = await TrySaveDebugScreenshotAsync(page, "processing");
                     logger.LogInformation(
-                        "ClipTranscribe sigue procesando {VideoUrl}. ElapsedSeconds: {ElapsedSeconds:0}. UrlValue: {UrlValue}. CopyButtons: {CopyButtonCount}. Body: {BodySnippet}. Screenshot: {Screenshot}",
+                        "ClipTranscribe sigue procesando {VideoUrl}. ElapsedSeconds: {ElapsedSeconds:0}. CurrentUrl: {CurrentUrl}. Title: {Title}. UrlValue: {UrlValue}. CopyButtons: {CopyButtonCount}. Body: {BodySnippet}. Screenshot: {Screenshot}",
                         videoUrl,
                         elapsedSeconds,
+                        diagnosticState.CurrentUrl,
+                        diagnosticState.Title,
                         diagnosticState.UrlValue,
                         diagnosticState.CopyButtonCount,
                         diagnosticState.BodySnippet,
@@ -984,9 +986,11 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 var diagnosticState = await ReadDiagnosticStateAsync(page);
                 var screenshotPath = await TrySaveDebugScreenshotAsync(page, "no-text");
                 logger.LogInformation(
-                    "ClipTranscribe sigue sin texto para {VideoUrl}. ElapsedSeconds: {ElapsedSeconds:0}. UrlValue: {UrlValue}. CopyButtons: {CopyButtonCount}. Body: {BodySnippet}. Screenshot: {Screenshot}",
+                    "ClipTranscribe sigue sin texto para {VideoUrl}. ElapsedSeconds: {ElapsedSeconds:0}. CurrentUrl: {CurrentUrl}. Title: {Title}. UrlValue: {UrlValue}. CopyButtons: {CopyButtonCount}. Body: {BodySnippet}. Screenshot: {Screenshot}",
                     videoUrl,
                     elapsedSeconds,
+                    diagnosticState.CurrentUrl,
+                    diagnosticState.Title,
                     diagnosticState.UrlValue,
                     diagnosticState.CopyButtonCount,
                     diagnosticState.BodySnippet,
@@ -1010,7 +1014,13 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     {
         try
         {
-            var copyButton = await ResolveTranscriptCopyButtonAsync(page);
+            var transcriptPanel = await ResolveTranscriptPanelAsync(page);
+            if (transcriptPanel is null)
+            {
+                return null;
+            }
+
+            var copyButton = await ResolveTranscriptCopyButtonAsync(page, transcriptPanel);
             if (copyButton is null)
             {
                 return null;
@@ -1061,16 +1071,50 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         }
     }
 
-    private static async Task<ILocator?> ResolveTranscriptCopyButtonAsync(IPage page)
+    private static async Task<ILocator?> ResolveTranscriptPanelAsync(IPage page)
     {
         foreach (var selector in new[]
                  {
-                     "div:has(> div span:text-is('Transcript')) button:has-text('Copy')",
-                     "button:has(svg.lucide-copy):has-text('Copy')",
-                     "button:has-text('Copy')"
+                     "div.scrollbar-thin.max-h-64.overflow-y-auto.text-secondary-foreground",
+                     "div.scrollbar-thin",
+                     "div.text-secondary-foreground.leading-relaxed"
                  })
         {
             var locator = page.Locator(selector).First;
+            try
+            {
+                await locator.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 500
+                });
+
+                return locator;
+            }
+            catch (TimeoutException)
+            {
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<ILocator?> ResolveTranscriptCopyButtonAsync(IPage page, ILocator transcriptPanel)
+    {
+        foreach (var selector in new[]
+                 {
+                     "xpath=preceding::button[normalize-space(.)='Copy'][1]",
+                     "xpath=ancestor::div[contains(@class,'animate-fade-up')][1]//button[normalize-space(.)='Copy']",
+                     "button:has-text('Copy')"
+                 })
+        {
+            var locator = selector == "button:has-text('Copy')"
+                ? page.Locator(selector).First
+                : transcriptPanel.Locator(selector).First;
+
             try
             {
                 await locator.WaitForAsync(new LocatorWaitForOptions
@@ -1112,68 +1156,18 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     {
         try
         {
-            return await page.EvaluateAsync<string?>(
-                """
-                () => {
-                  const visible = (element) => {
-                    if (!element) {
-                      return false;
-                    }
+            var transcriptPanel = await ResolveTranscriptPanelAsync(page);
+            if (transcriptPanel is null)
+            {
+                return null;
+            }
 
-                    const style = window.getComputedStyle(element);
-                    if (style.display === 'none' || style.visibility === 'hidden') {
-                      return false;
-                    }
-
-                    const rect = element.getBoundingClientRect();
-                    return rect.width > 0 && rect.height > 0;
-                  };
-
-                  const clean = (value) => (value || '')
-                    .replace(/\r/g, '')
-                    .replace(/[ \t]+\n/g, '\n')
-                    .replace(/\n{3,}/g, '\n\n')
-                    .replace(/[ \t]{2,}/g, ' ')
-                    .trim();
-
-                  const labels = Array.from(document.querySelectorAll('span'))
-                    .filter((element) => (element.textContent || '').trim().toLowerCase() === 'transcript');
-
-                  for (const label of labels) {
-                    const root = label.closest('.animate-fade-up') || label.parentElement?.parentElement?.parentElement;
-                    if (!root || !visible(root)) {
-                      continue;
-                    }
-
-                    const transcriptNodes = Array.from(root.querySelectorAll('div'))
-                      .filter((element) => visible(element))
-                      .filter((element) => {
-                        const text = clean(element.innerText || element.textContent || '');
-                        if (text.length < 40) {
-                          return false;
-                        }
-
-                        const metadata = `${element.className || ''}`.toLowerCase();
-                        const hasTranscriptShape =
-                          metadata.includes('overflow-y-auto') ||
-                          metadata.includes('scrollbar') ||
-                          metadata.includes('leading-relaxed') ||
-                          metadata.includes('text-secondary-foreground');
-
-                        const hasNestedButton = element.querySelector('button');
-                        return hasTranscriptShape && !hasNestedButton;
-                      })
-                      .map((element) => clean(element.innerText || element.textContent || ''))
-                      .sort((left, right) => right.length - left.length);
-
-                    if (transcriptNodes.length) {
-                      return transcriptNodes[0];
-                    }
-                  }
-
-                  return null;
-                }
-                """);
+            var text = await transcriptPanel.InnerTextAsync();
+            return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+        }
+        catch (TimeoutException)
+        {
+            return null;
         }
         catch (PlaywrightException)
         {
@@ -1185,31 +1179,53 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     {
         try
         {
-            var diagnosticJson = await page.EvaluateAsync<string>(
-                """
-                () => {
-                  const input = document.querySelector('input[type="url"], input[placeholder*="Reel" i], input[placeholder*="TikTok" i]');
-                  const copyButtons = Array.from(document.querySelectorAll('button'))
-                    .filter((button) => (button.textContent || '').trim().toLowerCase().includes('copy'));
-                  const body = (document.body?.innerText || '')
-                    .replace(/\s+/g, ' ')
-                    .trim()
-                    .slice(0, 500);
+            string urlValue = string.Empty;
+            string bodySnippet = string.Empty;
+            string currentUrl = page.Url ?? string.Empty;
+            string title = string.Empty;
 
-                  return JSON.stringify({
-                    urlValue: input?.value || '',
-                    copyButtonCount: copyButtons.length,
-                    bodySnippet: body
-                  });
+            var input = page.Locator("input[type='url']").First;
+            if (await input.CountAsync() > 0)
+            {
+                try
+                {
+                    urlValue = await input.InputValueAsync();
                 }
-                """);
+                catch (PlaywrightException)
+                {
+                }
+            }
 
-            var state = JsonSerializer.Deserialize<ClipTranscribeDiagnosticState>(diagnosticJson);
-            return state ?? new ClipTranscribeDiagnosticState(string.Empty, 0, string.Empty);
+            try
+            {
+                title = await page.TitleAsync();
+            }
+            catch (PlaywrightException)
+            {
+            }
+
+            try
+            {
+                bodySnippet = (await page.Locator("body").InnerTextAsync())
+                    .Replace("\r", string.Empty, StringComparison.Ordinal)
+                    .Replace('\n', ' ')
+                    .Trim();
+
+                if (bodySnippet.Length > 500)
+                {
+                    bodySnippet = bodySnippet[..500];
+                }
+            }
+            catch (PlaywrightException)
+            {
+            }
+
+            var copyButtons = await page.Locator("button:has-text('Copy')").CountAsync();
+            return new ClipTranscribeDiagnosticState(urlValue, copyButtons, bodySnippet, currentUrl, title);
         }
         catch (Exception)
         {
-            return new ClipTranscribeDiagnosticState(string.Empty, 0, string.Empty);
+            return new ClipTranscribeDiagnosticState(string.Empty, 0, string.Empty, string.Empty, string.Empty);
         }
     }
 
@@ -1706,7 +1722,9 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     private sealed record ClipTranscribeDiagnosticState(
         string UrlValue,
         int CopyButtonCount,
-        string BodySnippet);
+        string BodySnippet,
+        string CurrentUrl,
+        string Title);
 
     private sealed class ClipTranscribeAuthenticationRequiredException(string message) : InvalidOperationException(message);
 }
