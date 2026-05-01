@@ -285,12 +285,11 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         var input = await ResolveUrlInputAsync(page);
         logger.LogInformation("ClipTranscribe URL input resolved for {VideoUrl}.", normalizedVideoUrl);
 
-        await input.FillAsync(normalizedVideoUrl);
-        await input.DispatchEventAsync("input");
-        await input.DispatchEventAsync("change");
+        await EnterVideoUrlReliablyAsync(page, input, normalizedVideoUrl);
         logger.LogInformation("Pegando link en ClipTranscribe: {VideoUrl}", normalizedVideoUrl);
 
         await SubmitAsync(page, input, normalizedVideoUrl);
+        await EnsureSubmissionStartedAsync(page, input, normalizedVideoUrl, cancellationToken);
         logger.LogInformation(
             "Transcribiendo {VideoUrl}. Esperando {WaitSeconds} segundos antes de copiar el texto.",
             normalizedVideoUrl,
@@ -298,6 +297,131 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         await Task.Delay(TimeSpan.FromSeconds(InitialGenerationWaitSeconds), cancellationToken);
 
         return await WaitForTranscriptAsync(page, normalizedVideoUrl, cancellationToken);
+    }
+
+    private async Task EnterVideoUrlReliablyAsync(IPage page, ILocator input, string expectedValue)
+    {
+        const int typingDelay = 30;
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            await input.ClickAsync();
+            await TrySelectAllAndClearAsync(input, "Control+A");
+            await TrySelectAllAndClearAsync(input, "Meta+A");
+            await input.FillAsync(string.Empty);
+
+            await input.PressSequentiallyAsync(expectedValue, new LocatorPressSequentiallyOptions
+            {
+                Delay = typingDelay
+            });
+
+            await input.DispatchEventAsync("input");
+            await input.DispatchEventAsync("change");
+            await page.Keyboard.PressAsync("Tab");
+            await Task.Delay(350);
+
+            var actualValue = await input.InputValueAsync();
+            if (string.Equals(actualValue, expectedValue, StringComparison.Ordinal))
+            {
+                logger.LogInformation(
+                    "ClipTranscribe input quedó con el valor esperado para {VideoUrl} en intento {Attempt}.",
+                    expectedValue,
+                    attempt + 1);
+                return;
+            }
+
+            await input.FillAsync(expectedValue);
+            await input.DispatchEventAsync("input");
+            await input.DispatchEventAsync("change");
+            await Task.Delay(250);
+
+            actualValue = await input.InputValueAsync();
+            if (string.Equals(actualValue, expectedValue, StringComparison.Ordinal))
+            {
+                logger.LogInformation(
+                    "ClipTranscribe input quedó con el valor esperado para {VideoUrl} usando FillAsync en intento {Attempt}.",
+                    expectedValue,
+                    attempt + 1);
+                return;
+            }
+        }
+
+        var finalValue = await input.InputValueAsync();
+        throw new InvalidOperationException(
+            $"ClipTranscribe input mismatch. Expected '{expectedValue}' but found '{finalValue}'.");
+    }
+
+    private static async Task TrySelectAllAndClearAsync(ILocator input, string shortcut)
+    {
+        try
+        {
+            await input.PressAsync(shortcut);
+            await input.PressAsync("Backspace");
+        }
+        catch (PlaywrightException)
+        {
+        }
+    }
+
+    private async Task EnsureSubmissionStartedAsync(
+        IPage page,
+        ILocator input,
+        string videoUrl,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(1500, cancellationToken);
+
+            if (await HasSubmissionStartedAsync(page))
+            {
+                logger.LogInformation(
+                    "ClipTranscribe confirmó inicio de transcripción para {VideoUrl} en intento {Attempt}.",
+                    videoUrl,
+                    attempt + 1);
+                return;
+            }
+
+            if (attempt == 0)
+            {
+                logger.LogWarning(
+                    "ClipTranscribe no mostró señales de inicio para {VideoUrl} tras el click inicial. Reintentando con Enter.",
+                    videoUrl);
+                await input.PressAsync("Enter");
+                continue;
+            }
+
+            if (attempt == 1)
+            {
+                logger.LogWarning(
+                    "ClipTranscribe sigue sin iniciar para {VideoUrl}. Reintentando con click DOM nativo.",
+                    videoUrl);
+                await page.EvaluateAsync(
+                    """
+                    () => {
+                      const button = Array.from(document.querySelectorAll('button'))
+                        .find(element => (element.textContent || '').trim().toLowerCase() === 'transcribe');
+                      button?.click();
+                    }
+                    """);
+            }
+        }
+    }
+
+    private async Task<bool> HasSubmissionStartedAsync(IPage page)
+    {
+        if (await ResolveTranscriptPanelAsync(page) is not null)
+        {
+            return true;
+        }
+
+        if (await page.Locator("button:has-text('Copy')").CountAsync() > 0)
+        {
+            return true;
+        }
+
+        return await IsStillWorkingAsync(page);
     }
 
     private async Task LoginAsync(
@@ -1327,14 +1451,23 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         try
         {
             var bodyText = await TryReadBodyTextAsync(page);
-            return bodyText.Contains("Working…", StringComparison.OrdinalIgnoreCase) ||
-                   bodyText.Contains("Working...", StringComparison.OrdinalIgnoreCase) ||
-                   bodyText.Contains("transcribing", StringComparison.OrdinalIgnoreCase) ||
-                   bodyText.Contains("generating transcript", StringComparison.OrdinalIgnoreCase) ||
-                   bodyText.Contains("processing", StringComparison.OrdinalIgnoreCase) ||
-                   bodyText.Contains("trabajando", StringComparison.OrdinalIgnoreCase) ||
-                   bodyText.Contains("transcribiendo", StringComparison.OrdinalIgnoreCase) ||
-                   bodyText.Contains("procesando", StringComparison.OrdinalIgnoreCase);
+            foreach (var line in bodyText
+                         .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (line.Equals("Working...", StringComparison.OrdinalIgnoreCase) ||
+                    line.Equals("Working…", StringComparison.OrdinalIgnoreCase) ||
+                    line.Equals("Transcribing...", StringComparison.OrdinalIgnoreCase) ||
+                    line.Equals("Transcribing…", StringComparison.OrdinalIgnoreCase) ||
+                    line.Equals("Generating transcript...", StringComparison.OrdinalIgnoreCase) ||
+                    line.Equals("Generating transcript…", StringComparison.OrdinalIgnoreCase) ||
+                    line.Equals("Transcribiendo...", StringComparison.OrdinalIgnoreCase) ||
+                    line.Equals("Transcribiendo…", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
         catch (PlaywrightException)
         {
