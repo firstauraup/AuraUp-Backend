@@ -1446,6 +1446,11 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 return true;
             }
 
+            if (await HasVisibleLoginInputAsync(page))
+            {
+                return true;
+            }
+
             return await page.EvaluateAsync<bool>(
                 """
                 () => {
@@ -1463,35 +1468,55 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     return rect.width > 0 && rect.height > 0;
                   };
 
-                  const passwordField = Array.from(document.querySelectorAll('input[type="password"]'))
-                    .find((element) => visible(element));
-                  if (passwordField) {
-                    return true;
-                  }
-
-                  const authButtons = Array.from(document.querySelectorAll('button, [role="button"], a'))
+                  const candidates = Array.from(document.querySelectorAll('dialog, [role="dialog"], form, main, section, div'))
                     .filter((element) => visible(element))
-                    .map((element) => (element.textContent || '').trim().toLowerCase())
-                    .filter(Boolean);
+                    .slice(0, 200);
 
-                  const bodyText = (document.body?.innerText || '').toLowerCase();
-                  const hasAuthHeading =
-                    bodyText.includes('continue with google') ||
-                    bodyText.includes('continue with email') ||
-                    bodyText.includes('enter your email') ||
-                    bodyText.includes('sign in to continue') ||
-                    bodyText.includes('log in to continue') ||
-                    bodyText.includes('continuar con google') ||
-                    bodyText.includes('continuar con correo') ||
-                    bodyText.includes('inicia sesión para continuar') ||
-                    bodyText.includes('iniciar sesión para continuar');
+                  return candidates.some((element) => {
+                    const text = (element.textContent || '').trim().toLowerCase();
+                    if (!text) {
+                      return false;
+                    }
 
-                  const signInButtons = authButtons.filter((text) =>
-                    text === 'sign in' ||
-                    text === 'log in' ||
-                    text === 'iniciar sesión' ||
-                    text === 'acceder');
-                  return hasAuthHeading && signInButtons.length > 0;
+                    const hasAuthHeading =
+                      text.includes('continue with google') ||
+                      text.includes('continue with email') ||
+                      text.includes('enter your email') ||
+                      text.includes('sign in to continue') ||
+                      text.includes('log in to continue') ||
+                      text.includes('continuar con google') ||
+                      text.includes('continuar con correo') ||
+                      text.includes('inicia sesión para continuar') ||
+                      text.includes('iniciar sesión para continuar');
+
+                    if (!hasAuthHeading) {
+                      return false;
+                    }
+
+                    const inputs = Array.from(element.querySelectorAll('input'))
+                      .filter((input) => visible(input));
+                    if (inputs.some((input) =>
+                      input.type === 'password' ||
+                      input.type === 'email' ||
+                      (input.getAttribute('autocomplete') || '').toLowerCase().includes('email') ||
+                      (input.getAttribute('placeholder') || '').toLowerCase().includes('email') ||
+                      (input.getAttribute('placeholder') || '').toLowerCase().includes('correo'))) {
+                      return true;
+                    }
+
+                    const authCtas = Array.from(element.querySelectorAll('button, [role="button"], a'))
+                      .filter((button) => visible(button))
+                      .map((button) => (button.textContent || '').trim().toLowerCase())
+                      .filter(Boolean);
+
+                    const continueOptions = authCtas.filter((text) =>
+                      text.includes('continue with google') ||
+                      text.includes('continue with email') ||
+                      text.includes('continuar con google') ||
+                      text.includes('continuar con correo'));
+
+                    return continueOptions.length >= 2;
+                  });
                 }
                 """);
         }
