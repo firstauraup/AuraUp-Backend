@@ -291,10 +291,10 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         await SubmitAsync(page, input, normalizedVideoUrl);
         await EnsureSubmissionStartedAsync(page, input, normalizedVideoUrl, cancellationToken);
         logger.LogInformation(
-            "Transcribiendo {VideoUrl}. Esperando {WaitSeconds} segundos antes de copiar el texto.",
+            "Transcribiendo {VideoUrl}. Esperando hasta {WaitSeconds} segundos iniciales antes de copiar el texto.",
             normalizedVideoUrl,
             InitialGenerationWaitSeconds);
-        await Task.Delay(TimeSpan.FromSeconds(InitialGenerationWaitSeconds), cancellationToken);
+        await WaitForInitialGenerationWindowAsync(page, normalizedVideoUrl, cancellationToken);
 
         return await WaitForTranscriptAsync(page, normalizedVideoUrl, cancellationToken);
     }
@@ -374,6 +374,12 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(1500, cancellationToken);
 
+            if (await IsAuthenticationWallAsync(page))
+            {
+                throw new ClipTranscribeAuthenticationRequiredException(
+                    "ClipTranscribe requested authentication before starting the transcript.");
+            }
+
             if (await HasSubmissionStartedAsync(page))
             {
                 logger.LogInformation(
@@ -406,6 +412,55 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     }
                     """);
             }
+        }
+
+        if (await IsAuthenticationWallAsync(page))
+        {
+            throw new ClipTranscribeAuthenticationRequiredException(
+                "ClipTranscribe requested authentication before starting the transcript.");
+        }
+    }
+
+    private async Task WaitForInitialGenerationWindowAsync(
+        IPage page,
+        string videoUrl,
+        CancellationToken cancellationToken)
+    {
+        var deadlineUtc = DateTime.UtcNow.AddSeconds(InitialGenerationWaitSeconds);
+
+        while (DateTime.UtcNow < deadlineUtc)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var pageError = await TryReadProcessingErrorAsync(page);
+            if (!string.IsNullOrWhiteSpace(pageError))
+            {
+                throw new InvalidOperationException(
+                    $"ClipTranscribe reported an error while transcribing '{videoUrl}': {pageError}");
+            }
+
+            if (await IsAuthenticationWallAsync(page))
+            {
+                throw new ClipTranscribeAuthenticationRequiredException(
+                    "ClipTranscribe requested authentication before returning a transcript.");
+            }
+
+            if (await ResolveTranscriptPanelAsync(page) is not null)
+            {
+                return;
+            }
+
+            if (await page.Locator("button:has-text('Copy')").CountAsync() > 0)
+            {
+                return;
+            }
+
+            if (!await IsStillWorkingAsync(page))
+            {
+                return;
+            }
+
+            await Task.Delay(1_000, cancellationToken);
         }
     }
 
@@ -1494,6 +1549,9 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 }
 
                 if (line.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("couldn't transcribe", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("could not transcribe", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("please check the link", StringComparison.OrdinalIgnoreCase) ||
                     line.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
                     line.Contains("unable", StringComparison.OrdinalIgnoreCase) ||
                     line.Contains("try again", StringComparison.OrdinalIgnoreCase) ||
