@@ -380,12 +380,6 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     $"ClipTranscribe reported an error while transcribing '{videoUrl}': {pageError}");
             }
 
-            if (await IsAuthenticationWallAsync(page))
-            {
-                throw new ClipTranscribeAuthenticationRequiredException(
-                    "ClipTranscribe requested authentication before starting the transcript.");
-            }
-
             if (await HasSubmissionStartedAsync(page))
             {
                 logger.LogInformation(
@@ -394,12 +388,6 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     attempt + 1);
                 return;
             }
-        }
-
-        if (await IsAuthenticationWallAsync(page))
-        {
-            throw new ClipTranscribeAuthenticationRequiredException(
-                "ClipTranscribe requested authentication before starting the transcript.");
         }
 
         logger.LogInformation(
@@ -1435,74 +1423,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 return true;
             }
 
-            return await page.EvaluateAsync<bool>(
-                """
-                () => {
-                  const visible = (element) => {
-                    if (!element) {
-                      return false;
-                    }
-
-                    const style = window.getComputedStyle(element);
-                    if (style.display === 'none' || style.visibility === 'hidden') {
-                      return false;
-                    }
-
-                    const rect = element.getBoundingClientRect();
-                    return rect.width > 0 && rect.height > 0;
-                  };
-
-                  const candidates = Array.from(document.querySelectorAll('dialog, [role="dialog"], form'))
-                    .filter((element) => visible(element))
-                    .slice(0, 50);
-
-                  return candidates.some((element) => {
-                    const text = (element.textContent || '').trim().toLowerCase();
-                    if (!text) {
-                      return false;
-                    }
-
-                    const hasAuthHeading =
-                      text.includes('continue with google') ||
-                      text.includes('continue with email') ||
-                      text.includes('enter your email') ||
-                      text.includes('sign in to continue') ||
-                      text.includes('log in to continue') ||
-                      text.includes('continuar con google') ||
-                      text.includes('continuar con correo') ||
-                      text.includes('inicia sesión para continuar') ||
-                      text.includes('iniciar sesión para continuar');
-
-                    if (!hasAuthHeading) {
-                      return false;
-                    }
-
-                    const inputs = Array.from(element.querySelectorAll('input'))
-                      .filter((input) => visible(input));
-                    if (inputs.some((input) =>
-                      input.type === 'password' ||
-                      input.type === 'email' ||
-                      (input.getAttribute('autocomplete') || '').toLowerCase().includes('email') ||
-                      (input.getAttribute('placeholder') || '').toLowerCase().includes('email') ||
-                      (input.getAttribute('placeholder') || '').toLowerCase().includes('correo'))) {
-                      return true;
-                    }
-
-                    const authCtas = Array.from(element.querySelectorAll('button, [role="button"], a'))
-                      .filter((button) => visible(button))
-                      .map((button) => (button.textContent || '').trim().toLowerCase())
-                      .filter(Boolean);
-
-                    const continueOptions = authCtas.filter((text) =>
-                      text.includes('continue with google') ||
-                      text.includes('continue with email') ||
-                      text.includes('continuar con google') ||
-                      text.includes('continuar con correo'));
-
-                    return continueOptions.length >= 2;
-                  });
-                }
-                """);
+            return false;
         }
         catch (PlaywrightException)
         {
