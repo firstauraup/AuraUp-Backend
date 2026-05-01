@@ -936,6 +936,10 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 normalized);
             return normalized;
         }
+        catch (TimeoutException)
+        {
+            return null;
+        }
         catch (PlaywrightException)
         {
             return null;
@@ -947,6 +951,10 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         try
         {
             return await page.EvaluateAsync<string?>("() => navigator.clipboard?.readText?.() ?? null");
+        }
+        catch (TimeoutException)
+        {
+            return null;
         }
         catch (PlaywrightException)
         {
