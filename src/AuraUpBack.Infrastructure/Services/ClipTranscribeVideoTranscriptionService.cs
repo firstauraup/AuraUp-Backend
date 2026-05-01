@@ -16,7 +16,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     private const int InitialGenerationWaitSeconds = 15;
     private const int ProgressLogIntervalSeconds = 15;
     private static readonly Regex MarketingNoiseRegex = new(
-        "transcribe tiktok|instagram reels to text|youtube shorts to text|no credit card required|upgrade to pro|start creating for free|simple pricing|explore tools|how it works|built for modern creators|formato corto|formato largo|preguntas frecuentes|iniciar sesión|inicia sesión|short format|long format|faq|log in|sign in",
+        "transcribe tiktok|instagram reels to text|youtube shorts to text|no credit card required|upgrade to pro|start creating for free|simple pricing|explore tools|how it works|built for modern creators|formato corto|formato largo|preguntas frecuentes|iniciar sesión|inicia sesión|short format|long format|faq|log in|sign in|creators|transcriptions|saves me hours|best transcription tool|hook generator",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex NavigationNoiseRegex = new(
         "^(?:formato corto|formato largo|preguntas frecuentes|iniciar sesión|inicia sesión|short format|long format|faq|sign in|log in|pricing|home|tools)(?:\\s+(?:formato corto|formato largo|preguntas frecuentes|iniciar sesión|inicia sesión|short format|long format|faq|sign in|log in|pricing|home|tools))*$",
@@ -982,13 +982,14 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 
     private async Task<string?> TryCopyTranscriptAsync(IPage page, string videoUrl)
     {
-        var copyButton = page.GetByRole(AriaRole.Button, new PageGetByRoleOptions
-        {
-            Name = "Copy"
-        }).First;
-
         try
         {
+            var copyButton = await ResolveTranscriptCopyButtonAsync(page);
+            if (copyButton is null)
+            {
+                return null;
+            }
+
             await copyButton.WaitForAsync(new LocatorWaitForOptions
             {
                 State = WaitForSelectorState.Visible,
@@ -1005,14 +1006,15 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             var clipboardText = await TryReadClipboardTextAsync(page);
             if (string.IsNullOrWhiteSpace(clipboardText))
             {
-                return null;
+                clipboardText = await TryReadTranscriptPanelTextAsync(page);
+                if (string.IsNullOrWhiteSpace(clipboardText))
+                {
+                    return null;
+                }
             }
 
             var normalized = NormalizeTranscript(clipboardText);
-            if (normalized.Length < 40 ||
-                MarketingNoiseRegex.IsMatch(normalized) ||
-                NavigationNoiseRegex.IsMatch(normalized) ||
-                IsLikelyNavigationNoise(normalized))
+            if (!IsValidTranscriptCandidate(normalized))
             {
                 return null;
             }
@@ -1033,6 +1035,37 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         }
     }
 
+    private static async Task<ILocator?> ResolveTranscriptCopyButtonAsync(IPage page)
+    {
+        foreach (var selector in new[]
+                 {
+                     "div:has(> div span:text-is('Transcript')) button:has-text('Copy')",
+                     "button:has(svg.lucide-copy):has-text('Copy')",
+                     "button:has-text('Copy')"
+                 })
+        {
+            var locator = page.Locator(selector).First;
+            try
+            {
+                await locator.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 500
+                });
+
+                return locator;
+            }
+            catch (TimeoutException)
+            {
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
+        return null;
+    }
+
     private static async Task<string?> TryReadClipboardTextAsync(IPage page)
     {
         try
@@ -1042,6 +1075,79 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         catch (TimeoutException)
         {
             return null;
+        }
+        catch (PlaywrightException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<string?> TryReadTranscriptPanelTextAsync(IPage page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<string?>(
+                """
+                () => {
+                  const visible = (element) => {
+                    if (!element) {
+                      return false;
+                    }
+
+                    const style = window.getComputedStyle(element);
+                    if (style.display === 'none' || style.visibility === 'hidden') {
+                      return false;
+                    }
+
+                    const rect = element.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                  };
+
+                  const clean = (value) => (value || '')
+                    .replace(/\r/g, '')
+                    .replace(/[ \t]+\n/g, '\n')
+                    .replace(/\n{3,}/g, '\n\n')
+                    .replace(/[ \t]{2,}/g, ' ')
+                    .trim();
+
+                  const labels = Array.from(document.querySelectorAll('span'))
+                    .filter((element) => (element.textContent || '').trim().toLowerCase() === 'transcript');
+
+                  for (const label of labels) {
+                    const root = label.closest('.animate-fade-up') || label.parentElement?.parentElement?.parentElement;
+                    if (!root || !visible(root)) {
+                      continue;
+                    }
+
+                    const transcriptNodes = Array.from(root.querySelectorAll('div'))
+                      .filter((element) => visible(element))
+                      .filter((element) => {
+                        const text = clean(element.innerText || element.textContent || '');
+                        if (text.length < 40) {
+                          return false;
+                        }
+
+                        const metadata = `${element.className || ''}`.toLowerCase();
+                        const hasTranscriptShape =
+                          metadata.includes('overflow-y-auto') ||
+                          metadata.includes('scrollbar') ||
+                          metadata.includes('leading-relaxed') ||
+                          metadata.includes('text-secondary-foreground');
+
+                        const hasNestedButton = element.querySelector('button');
+                        return hasTranscriptShape && !hasNestedButton;
+                      })
+                      .map((element) => clean(element.innerText || element.textContent || ''))
+                      .sort((left, right) => right.length - left.length);
+
+                    if (transcriptNodes.length) {
+                      return transcriptNodes[0];
+                    }
+                  }
+
+                  return null;
+                }
+                """);
         }
         catch (PlaywrightException)
         {
@@ -1085,130 +1191,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     {
         try
         {
-            var candidate = await page.EvaluateAsync<string?>(
-                """
-                (videoUrl) => {
-                  const visible = (element) => {
-                    if (!element) {
-                      return false;
-                    }
-
-                    const style = window.getComputedStyle(element);
-                    if (style.display === 'none' || style.visibility === 'hidden') {
-                      return false;
-                    }
-
-                    const rect = element.getBoundingClientRect();
-                    return rect.width > 0 && rect.height > 0;
-                  };
-
-                  const clean = (value) => (value || '')
-                    .replace(/\r/g, '')
-                    .replace(/[ \t]+\n/g, '\n')
-                    .replace(/\n{3,}/g, '\n\n')
-                    .replace(/[ \t]{2,}/g, ' ')
-                    .trim();
-
-                  const gatherText = (element) => {
-                    if (!element) {
-                      return '';
-                    }
-
-                    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
-                      return clean(element.value);
-                    }
-
-                    return clean(element.innerText || element.textContent || '');
-                  };
-
-                  const scoreElement = (element, text) => {
-                    const metadata = `${element.id || ''} ${element.className || ''}`.toLowerCase();
-                    let score = 0;
-
-                    if (/(transcript|caption|script|result|output)/i.test(metadata)) {
-                      score += 180;
-                    }
-
-                    if (text.includes('\n')) {
-                      score += 30;
-                    }
-
-                    if (text.length > 240) {
-                      score += 80;
-                    } else if (text.length > 120) {
-                      score += 30;
-                    }
-
-                    if (/hook:|main point:|visual pacing:/i.test(text)) {
-                      score += 40;
-                    }
-
-                    if (videoUrl && text.includes(videoUrl)) {
-                      score -= 40;
-                    }
-
-                    return score;
-                  };
-
-                  const transcriptScopedCandidates = [];
-                  const preferredNodes = Array.from(document.querySelectorAll('.mt-6.animate-fade-up, [class*="animate-fade-up"], [class*="transcript" i], [id*="transcript" i]'));
-                  for (const element of preferredNodes) {
-                    if (!visible(element)) {
-                      continue;
-                    }
-
-                    const text = gatherText(element);
-                    if (text.length < 40) {
-                      continue;
-                    }
-
-                    transcriptScopedCandidates.push({ text, score: scoreElement(element, text) + 400 });
-                  }
-
-                  const scopedNodes = Array.from(document.querySelectorAll('[id*="transcript" i], [class*="transcript" i], [data-testid*="transcript" i], [id*="caption" i], [class*="caption" i], textarea, pre'));
-
-                  for (const element of scopedNodes) {
-                    if (!visible(element)) {
-                      continue;
-                    }
-
-                    const text = gatherText(element);
-                    if (text.length < 80) {
-                      continue;
-                    }
-
-                    transcriptScopedCandidates.push({ text, score: scoreElement(element, text) });
-                  }
-
-                  if (transcriptScopedCandidates.length) {
-                    transcriptScopedCandidates.sort((left, right) => right.score - left.score);
-                    return transcriptScopedCandidates[0].text;
-                  }
-
-                  const genericCandidates = [];
-                  const genericNodes = Array.from(document.querySelectorAll('textarea, pre, article, section, div, p'));
-                  for (const element of genericNodes) {
-                    if (!visible(element)) {
-                      continue;
-                    }
-
-                    const text = gatherText(element);
-                    if (text.length < 100) {
-                      continue;
-                    }
-
-                    genericCandidates.push({ text, score: scoreElement(element, text) });
-                  }
-
-                  if (!genericCandidates.length) {
-                    return null;
-                  }
-
-                  genericCandidates.sort((left, right) => right.score - left.score);
-                  return genericCandidates[0].text;
-                }
-                """,
-                videoUrl);
+            var candidate = await TryReadTranscriptPanelTextAsync(page);
 
             if (string.IsNullOrWhiteSpace(candidate))
             {
@@ -1216,19 +1199,8 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             }
 
             var normalized = NormalizeTranscript(candidate);
-            if (normalized.Length < 40)
+            if (!IsValidTranscriptCandidate(normalized))
             {
-                return null;
-            }
-
-            if (MarketingNoiseRegex.IsMatch(normalized))
-            {
-                return null;
-            }
-
-            if (NavigationNoiseRegex.IsMatch(normalized) || IsLikelyNavigationNoise(normalized))
-            {
-                logger.LogInformation("ClipTranscribe rejected navigation text while reading transcript output.");
                 return null;
             }
 
@@ -1399,6 +1371,37 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         normalized = Regex.Replace(normalized, @"\n{3,}", "\n\n");
         normalized = Regex.Replace(normalized, @"[ \t]{2,}", " ");
         return normalized.Trim(' ', '"', '\'', '“', '”', '‘', '’');
+    }
+
+    private static bool IsValidTranscriptCandidate(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length < 40)
+        {
+            return false;
+        }
+
+        if (MarketingNoiseRegex.IsMatch(value) ||
+            NavigationNoiseRegex.IsMatch(value) ||
+            IsLikelyNavigationNoise(value))
+        {
+            return false;
+        }
+
+        var normalized = value.Replace('\n', ' ');
+        var marketingSignals = new[]
+        {
+            "1,200+ creators",
+            "10,000+ transcriptions",
+            "saves me hours",
+            "best transcription tool",
+            "hook generator",
+            "no credit card required",
+            "free to get started",
+            "supported platforms",
+            "simple pricing"
+        };
+
+        return !marketingSignals.Any(signal => normalized.Contains(signal, StringComparison.OrdinalIgnoreCase));
     }
 
     private static bool IsLikelyNavigationNoise(string value)
