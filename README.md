@@ -372,18 +372,56 @@ Ejemplo de alerta:
 
 ## Modulo de transcripcion
 
-Por ahora es mock.
+La transcripcion real usa `ClipTranscribeVideoTranscriptionService` con Playwright.
 
-### `MockVideoTranscriptionService`
+### Variables de entorno de ClipTranscribe
+
+No pongas la cuenta en `appsettings.json`. Configurala en variables de entorno:
+
+```bash
+Transcription__ClipTranscribeEmail=tu-email@dominio.com
+Transcription__ClipTranscribePassword=tu-password
+Transcription__ClipTranscribeSessionStatePath=/app/App_Data/cliptranscribe-rpa-session.json
+```
+
+Tambien se aceptan estos alias simples:
+
+```bash
+CLIPTRANSCRIBE_EMAIL=tu-email@dominio.com
+CLIPTRANSCRIBE_PASSWORD=tu-password
+CLIPTRANSCRIBE_SESSION_STATE_PATH=/app/App_Data/cliptranscribe-rpa-session.json
+```
+
+Si ya tienes una sesion exportada de Playwright, puedes cargarla por variable:
+
+```bash
+CLIPTRANSCRIBE_SESSION_STATE_JSON='{"cookies":[],"origins":[]}'
+CLIPTRANSCRIBE_SESSION_STATE_BASE64=eyJjb29raWVzIjpbXSwib3JpZ2lucyI6W119
+```
+
+Que registra en logs:
+
+- cuando arranca la transcripcion
+- si carga sesion por token/storage state
+- cuando inicia y completa login
+- cuando pega el link del reel
+- cuando envia el link y ClipTranscribe empieza a generar
+- cuando captura el texto y cuantos caracteres obtuvo
+- cuando cae al fallback de Instagram/caption
 
 Que hace:
 
-- toma la URL del video y el caption
-- devuelve un transcript de ejemplo mas creible
+- abre ClipTranscribe con Playwright
+- reutiliza la sesion guardada si existe
+- si no hay sesion y hay credenciales, inicia sesion con la cuenta configurada
+- pega la URL del reel
+- espera el transcript
+- si ClipTranscribe falla, intenta leer metadata publica de Instagram y luego usa el caption como ultimo fallback
 
 Objetivo:
 
-- poder probar la experiencia del panel antes de meter Whisper u OpenAI
+- tener una transcripcion real sin meter credenciales en el repo
+- dejar trazas suficientes para diagnosticar si falla login, sesion, pegado de link, generacion o captura de texto
 
 Ejemplo de salida:
 

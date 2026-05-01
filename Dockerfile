@@ -31,6 +31,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV AuraUpBack__DataPath=/app/App_Data/aura-up-back.json
 ENV Instagram__RpaSessionStatePath=/app/App_Data/instagram-rpa-session.json
 ENV Instagram__RpaHeadless=true
+ENV Transcription__ClipTranscribeSessionStatePath=/app/App_Data/cliptranscribe-rpa-session.json
 
 COPY --from=build /app/publish ./
 
