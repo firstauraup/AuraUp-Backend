@@ -13,7 +13,8 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     IOptions<TranscriptionOptions> options,
     ILogger<ClipTranscribeVideoTranscriptionService> logger) : IVideoTranscriptionService
 {
-    private const int InitialGenerationWaitSeconds = 8;
+    private const int InitialGenerationWaitSeconds = 15;
+    private const int ProgressLogIntervalSeconds = 15;
     private static readonly Regex MarketingNoiseRegex = new(
         "transcribe tiktok|instagram reels to text|youtube shorts to text|no credit card required|upgrade to pro|start creating for free|simple pricing|explore tools|how it works|built for modern creators|formato corto|formato largo|preguntas frecuentes|iniciar sesión|inicia sesión|short format|long format|faq|log in|sign in",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -278,23 +279,24 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     private async Task<string> SubmitTranscriptionAsync(IPage page, string videoUrl, CancellationToken cancellationToken)
     {
         await DismissDecorativeUiAsync(page);
+        var normalizedVideoUrl = NormalizeVideoUrlForClipTranscribe(videoUrl);
 
         var input = await ResolveUrlInputAsync(page);
-        logger.LogInformation("ClipTranscribe URL input resolved for {VideoUrl}.", videoUrl);
+        logger.LogInformation("ClipTranscribe URL input resolved for {VideoUrl}.", normalizedVideoUrl);
 
-        await input.FillAsync(videoUrl);
+        await input.FillAsync(normalizedVideoUrl);
         await input.DispatchEventAsync("input");
         await input.DispatchEventAsync("change");
-        logger.LogInformation("Pegando link en ClipTranscribe: {VideoUrl}", videoUrl);
+        logger.LogInformation("Pegando link en ClipTranscribe: {VideoUrl}", normalizedVideoUrl);
 
-        await SubmitAsync(page, input);
+        await SubmitAsync(page, input, normalizedVideoUrl);
         logger.LogInformation(
             "Transcribiendo {VideoUrl}. Esperando {WaitSeconds} segundos antes de copiar el texto.",
-            videoUrl,
+            normalizedVideoUrl,
             InitialGenerationWaitSeconds);
         await Task.Delay(TimeSpan.FromSeconds(InitialGenerationWaitSeconds), cancellationToken);
 
-        return await WaitForTranscriptAsync(page, videoUrl, cancellationToken);
+        return await WaitForTranscriptAsync(page, normalizedVideoUrl, cancellationToken);
     }
 
     private async Task LoginAsync(
@@ -695,6 +697,18 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         return new Uri(new Uri(_options.ClipTranscribeBaseUrl), path).ToString();
     }
 
+    private static string NormalizeVideoUrlForClipTranscribe(string videoUrl)
+    {
+        var normalized = videoUrl.Trim();
+        normalized = Regex.Replace(
+            normalized,
+            @"instagram\.com/reel/",
+            "instagram.com/reels/",
+            RegexOptions.IgnoreCase);
+
+        return normalized;
+    }
+
     private static string ResolveSessionStatePath(string configuredPath)
     {
         var path = string.IsNullOrWhiteSpace(configuredPath)
@@ -795,8 +809,48 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         throw new InvalidOperationException("ClipTranscribe did not show a URL input field.");
     }
 
-    private static async Task SubmitAsync(IPage page, ILocator input)
+    private async Task SubmitAsync(IPage page, ILocator input, string videoUrl)
     {
+        foreach (var selector in new[]
+                 {
+                     "button.gradient-btn:has-text('Transcribe')",
+                     "button:has-text('Transcribe')"
+                 })
+        {
+            var button = page.Locator(selector).First;
+            try
+            {
+                await button.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 2_000
+                });
+
+                var isDisabled = await button.IsDisabledAsync();
+                logger.LogInformation(
+                    "Botón Transcribe encontrado para {VideoUrl}. Disabled: {Disabled}. Selector: {Selector}",
+                    videoUrl,
+                    isDisabled,
+                    selector);
+
+                if (!isDisabled)
+                {
+                    await button.ClickAsync(new LocatorClickOptions
+                    {
+                        Force = true
+                    });
+                    logger.LogInformation("Botón Transcribe clickeado para {VideoUrl}.", videoUrl);
+                    return;
+                }
+            }
+            catch (TimeoutException)
+            {
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
         foreach (var label in new[]
                  {
                      "Transcribe",
@@ -825,13 +879,18 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 {
                     Force = true
                 });
+                logger.LogInformation("Botón {ButtonLabel} clickeado para {VideoUrl}.", label, videoUrl);
                 return;
+            }
+            catch (TimeoutException)
+            {
             }
             catch (PlaywrightException)
             {
             }
         }
 
+        logger.LogWarning("No se pudo encontrar botón Transcribe visible para {VideoUrl}. Enviando Enter en el input.", videoUrl);
         await input.PressAsync("Enter");
     }
 
@@ -840,27 +899,17 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         var startedAtUtc = DateTime.UtcNow;
         var timeout = TimeSpan.FromSeconds(Math.Max(30, _options.RequestTimeoutSeconds));
         var generationLogged = false;
+        var nextProgressLogAtUtc = startedAtUtc.AddSeconds(ProgressLogIntervalSeconds);
 
         while (DateTime.UtcNow - startedAtUtc < timeout)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var elapsedSeconds = (DateTime.UtcNow - startedAtUtc).TotalSeconds;
 
             var copiedTranscript = await TryCopyTranscriptAsync(page, videoUrl);
             if (!string.IsNullOrWhiteSpace(copiedTranscript))
             {
                 return copiedTranscript;
-            }
-
-            if (await IsStillWorkingAsync(page))
-            {
-                if (!generationLogged)
-                {
-                    generationLogged = true;
-                    logger.LogInformation("Transcribiendo {VideoUrl}. ClipTranscribe todavía está procesando.", videoUrl);
-                }
-
-                await Task.Delay(1_000, cancellationToken);
-                continue;
             }
 
             var transcript = await TryExtractTranscriptAsync(page, videoUrl);
@@ -873,17 +922,55 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 return transcript;
             }
 
-            if (await IsAuthenticationWallAsync(page))
-            {
-                throw new ClipTranscribeAuthenticationRequiredException(
-                    "ClipTranscribe requested authentication before returning a transcript.");
-            }
-
             var pageError = await TryReadProcessingErrorAsync(page);
             if (!string.IsNullOrWhiteSpace(pageError))
             {
                 throw new InvalidOperationException(
                     $"ClipTranscribe reported an error while transcribing '{videoUrl}': {pageError}");
+            }
+
+            if (await IsStillWorkingAsync(page))
+            {
+                if (!generationLogged)
+                {
+                    generationLogged = true;
+                    logger.LogInformation("Transcribiendo {VideoUrl}. ClipTranscribe todavía está procesando.", videoUrl);
+                }
+
+                if (DateTime.UtcNow >= nextProgressLogAtUtc)
+                {
+                    nextProgressLogAtUtc = DateTime.UtcNow.AddSeconds(ProgressLogIntervalSeconds);
+                    var diagnosticState = await ReadDiagnosticStateAsync(page);
+                    logger.LogInformation(
+                        "ClipTranscribe sigue procesando {VideoUrl}. ElapsedSeconds: {ElapsedSeconds:0}. UrlValue: {UrlValue}. CopyButtons: {CopyButtonCount}. Body: {BodySnippet}",
+                        videoUrl,
+                        elapsedSeconds,
+                        diagnosticState.UrlValue,
+                        diagnosticState.CopyButtonCount,
+                        diagnosticState.BodySnippet);
+                }
+
+                await Task.Delay(1_000, cancellationToken);
+                continue;
+            }
+
+            if (DateTime.UtcNow >= nextProgressLogAtUtc)
+            {
+                nextProgressLogAtUtc = DateTime.UtcNow.AddSeconds(ProgressLogIntervalSeconds);
+                var diagnosticState = await ReadDiagnosticStateAsync(page);
+                logger.LogInformation(
+                    "ClipTranscribe sigue sin texto para {VideoUrl}. ElapsedSeconds: {ElapsedSeconds:0}. UrlValue: {UrlValue}. CopyButtons: {CopyButtonCount}. Body: {BodySnippet}",
+                    videoUrl,
+                    elapsedSeconds,
+                    diagnosticState.UrlValue,
+                    diagnosticState.CopyButtonCount,
+                    diagnosticState.BodySnippet);
+            }
+
+            if (await IsAuthenticationWallAsync(page))
+            {
+                throw new ClipTranscribeAuthenticationRequiredException(
+                    "ClipTranscribe requested authentication before returning a transcript.");
             }
 
             await Task.Delay(1_500, cancellationToken);
@@ -959,6 +1046,38 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         catch (PlaywrightException)
         {
             return null;
+        }
+    }
+
+    private static async Task<ClipTranscribeDiagnosticState> ReadDiagnosticStateAsync(IPage page)
+    {
+        try
+        {
+            var diagnosticJson = await page.EvaluateAsync<string>(
+                """
+                () => {
+                  const input = document.querySelector('input[type="url"], input[placeholder*="Reel" i], input[placeholder*="TikTok" i]');
+                  const copyButtons = Array.from(document.querySelectorAll('button'))
+                    .filter((button) => (button.textContent || '').trim().toLowerCase().includes('copy'));
+                  const body = (document.body?.innerText || '')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .slice(0, 500);
+
+                  return JSON.stringify({
+                    urlValue: input?.value || '',
+                    copyButtonCount: copyButtons.length,
+                    bodySnippet: body
+                  });
+                }
+                """);
+
+            var state = JsonSerializer.Deserialize<ClipTranscribeDiagnosticState>(diagnosticJson);
+            return state ?? new ClipTranscribeDiagnosticState(string.Empty, 0, string.Empty);
+        }
+        catch (Exception)
+        {
+            return new ClipTranscribeDiagnosticState(string.Empty, 0, string.Empty);
         }
     }
 
@@ -1532,6 +1651,11 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         string Title,
         string Description,
         string BodyText);
+
+    private sealed record ClipTranscribeDiagnosticState(
+        string UrlValue,
+        int CopyButtonCount,
+        string BodySnippet);
 
     private sealed class ClipTranscribeAuthenticationRequiredException(string message) : InvalidOperationException(message);
 }
