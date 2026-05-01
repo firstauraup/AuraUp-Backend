@@ -413,12 +413,6 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     $"ClipTranscribe reported an error while transcribing '{videoUrl}': {pageError}");
             }
 
-            if (await IsAuthenticationWallAsync(page))
-            {
-                throw new ClipTranscribeAuthenticationRequiredException(
-                    "ClipTranscribe requested authentication before returning a transcript.");
-            }
-
             if (await ResolveTranscriptPanelAsync(page) is not null)
             {
                 return;
