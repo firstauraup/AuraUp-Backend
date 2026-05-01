@@ -289,7 +289,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         logger.LogInformation("Pegando link en ClipTranscribe: {VideoUrl}", normalizedVideoUrl);
 
         await SubmitAsync(page, input, normalizedVideoUrl);
-        await EnsureSubmissionStartedAsync(page, input, normalizedVideoUrl, cancellationToken);
+        await EnsureSubmissionStartedAsync(page, normalizedVideoUrl, cancellationToken);
         logger.LogInformation(
             "Transcribiendo {VideoUrl}. Esperando hasta {WaitSeconds} segundos iniciales antes de copiar el texto.",
             normalizedVideoUrl,
@@ -365,7 +365,6 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 
     private async Task EnsureSubmissionStartedAsync(
         IPage page,
-        ILocator input,
         string videoUrl,
         CancellationToken cancellationToken)
     {
@@ -373,6 +372,13 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         {
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(1500, cancellationToken);
+
+            var pageError = await TryReadProcessingErrorAsync(page);
+            if (!string.IsNullOrWhiteSpace(pageError))
+            {
+                throw new InvalidOperationException(
+                    $"ClipTranscribe reported an error while transcribing '{videoUrl}': {pageError}");
+            }
 
             if (await IsAuthenticationWallAsync(page))
             {
@@ -388,30 +394,6 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     attempt + 1);
                 return;
             }
-
-            if (attempt == 0)
-            {
-                logger.LogWarning(
-                    "ClipTranscribe no mostró señales de inicio para {VideoUrl} tras el click inicial. Reintentando con Enter.",
-                    videoUrl);
-                await input.PressAsync("Enter");
-                continue;
-            }
-
-            if (attempt == 1)
-            {
-                logger.LogWarning(
-                    "ClipTranscribe sigue sin iniciar para {VideoUrl}. Reintentando con click DOM nativo.",
-                    videoUrl);
-                await page.EvaluateAsync(
-                    """
-                    () => {
-                      const button = Array.from(document.querySelectorAll('button'))
-                        .find(element => (element.textContent || '').trim().toLowerCase() === 'transcribe');
-                      button?.click();
-                    }
-                    """);
-            }
         }
 
         if (await IsAuthenticationWallAsync(page))
@@ -419,6 +401,10 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             throw new ClipTranscribeAuthenticationRequiredException(
                 "ClipTranscribe requested authentication before starting the transcript.");
         }
+
+        logger.LogInformation(
+            "ClipTranscribe no mostró señales inmediatas de inicio para {VideoUrl}. Se continuará observando la respuesta del sitio sin reenviar el submit.",
+            videoUrl);
     }
 
     private async Task WaitForInitialGenerationWindowAsync(
