@@ -1144,8 +1144,14 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 
             if (await IsAuthenticationWallAsync(page))
             {
-                throw new ClipTranscribeAuthenticationRequiredException(
-                    "ClipTranscribe requested authentication before returning a transcript.");
+                if (HasLoginCredentials())
+                {
+                    throw new ClipTranscribeAuthenticationRequiredException(
+                        "ClipTranscribe requested authentication before returning a transcript.");
+                }
+
+                throw new InvalidOperationException(
+                    $"ClipTranscribe required authentication while transcribing '{videoUrl}'.");
             }
 
             await Task.Delay(1_500, cancellationToken);
