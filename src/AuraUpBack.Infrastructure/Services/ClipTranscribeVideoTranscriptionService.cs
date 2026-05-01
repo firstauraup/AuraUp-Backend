@@ -38,19 +38,20 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         var sessionStatePath = await PrepareSessionStateAsync(cancellationToken);
         var hasSessionState = File.Exists(sessionStatePath);
         var hasLoginCredentials = HasLoginCredentials();
+        var headless = ResolveHeadlessMode();
 
         logger.LogInformation(
             "Entrando {CredentialMode} a ClipTranscribe para transcribir {VideoUrl}. Headless: {Headless}. SessionStateConfigured: {SessionStateConfigured}. LoginConfigured: {LoginConfigured}.",
             hasLoginCredentials ? "con credenciales" : "sin credenciales",
             videoUrl,
-            _options.Headless,
+            headless,
             hasSessionState,
             hasLoginCredentials);
 
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
-            Headless = _options.Headless,
+            Headless = headless,
             ChromiumSandbox = false,
             Args =
             [
@@ -668,6 +669,27 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     {
         return !string.IsNullOrWhiteSpace(_options.ClipTranscribeEmail) &&
                !string.IsNullOrWhiteSpace(_options.ClipTranscribePassword);
+    }
+
+    private bool ResolveHeadlessMode()
+    {
+        if (_options.Headless)
+        {
+            return true;
+        }
+
+        var hasDisplay =
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")) ||
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY"));
+
+        if (OperatingSystem.IsLinux() && !hasDisplay)
+        {
+            logger.LogWarning(
+                "ClipTranscribe estaba configurado con Headless=false, pero el proceso corre en Linux sin DISPLAY/WAYLAND. Forzando headless=true para evitar que Chromium cierre al arrancar.");
+            return true;
+        }
+
+        return false;
     }
 
     private static bool IsLoginUrl(string? url)

@@ -32,6 +32,7 @@ ENV AuraUpBack__DataPath=/app/App_Data/aura-up-back.json
 ENV Instagram__RpaSessionStatePath=/app/App_Data/instagram-rpa-session.json
 ENV Instagram__RpaHeadless=true
 ENV Transcription__ClipTranscribeSessionStatePath=/app/App_Data/cliptranscribe-rpa-session.json
+ENV Transcription__Headless=true
 
 COPY --from=build /app/publish ./
 
