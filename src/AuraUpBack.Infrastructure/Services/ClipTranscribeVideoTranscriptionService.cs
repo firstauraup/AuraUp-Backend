@@ -816,13 +816,11 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     {
         try
         {
-            await locator.WaitForAsync(new LocatorWaitForOptions
-            {
-                State = WaitForSelectorState.Visible,
-                Timeout = 500
-            });
-
-            return true;
+            return await locator.IsVisibleAsync();
+        }
+        catch (TimeoutException)
+        {
+            return false;
         }
         catch (PlaywrightException)
         {
