@@ -113,13 +113,7 @@ internal sealed class MinioMediaStorage(
 
         try
         {
-            var effectiveObjectKey = objectKey;
-            if (string.IsNullOrWhiteSpace(effectiveObjectKey))
-            {
-                effectiveObjectKey = await EnsureAvatarObjectKeyAsync(accountId, cancellationToken);
-            }
-
-            return await GetSignedUrlOrFallbackAsync(effectiveObjectKey, sourceUrl, cancellationToken);
+            return await GetSignedUrlOrFallbackAsync(objectKey, sourceUrl, cancellationToken);
         }
         catch (Exception exception)
         {
@@ -143,13 +137,7 @@ internal sealed class MinioMediaStorage(
 
         try
         {
-            var effectiveObjectKey = objectKey;
-            if (string.IsNullOrWhiteSpace(effectiveObjectKey))
-            {
-                effectiveObjectKey = await EnsurePostObjectKeyAsync(accountId, postId, cancellationToken);
-            }
-
-            return await GetSignedUrlOrFallbackAsync(effectiveObjectKey, string.IsNullOrWhiteSpace(sourceUrl) ? reelUrl : sourceUrl, cancellationToken);
+            return await GetSignedUrlOrFallbackAsync(objectKey, string.IsNullOrWhiteSpace(sourceUrl) ? reelUrl : sourceUrl, cancellationToken);
         }
         catch (Exception exception)
         {
