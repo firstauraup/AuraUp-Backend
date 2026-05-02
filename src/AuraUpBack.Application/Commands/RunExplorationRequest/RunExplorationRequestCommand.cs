@@ -33,9 +33,10 @@ internal sealed class RunExplorationRequestCommandHandler(
                     Handle = request.AccountHandle,
                     ResearchPrompt = request.ResearchPrompt,
                     KnownPostExternalIds = knownReels.Select(x => x.ExternalId).ToArray(),
-                    StartFromPostIndex = knownReels.Count,
+                    StartFromPostIndex = 0,
                     MaxDiscoveryPosts = knownReels.Count + 12,
-                    DesiredNewPosts = 12
+                    DesiredNewPosts = 12,
+                    RefreshExistingPostsCount = 12
                 },
                 cancellationToken);
 

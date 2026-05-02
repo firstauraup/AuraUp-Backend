@@ -32,6 +32,7 @@ internal sealed class ApifyInstagramInspectionProvider(
         var researchPrompt = request.ResearchPrompt.Trim();
         var desiredNewPosts = request.DesiredNewPosts <= 0 ? 12 : request.DesiredNewPosts;
         var startFromPostIndex = Math.Max(0, request.StartFromPostIndex);
+        var refreshExistingPostsCount = Math.Max(0, request.RefreshExistingPostsCount);
         var discoveryLimit = ResolveDiscoveryLimit(request, desiredNewPosts, startFromPostIndex);
         var knownIds = new HashSet<string>(request.KnownPostExternalIds, StringComparer.OrdinalIgnoreCase);
         var profileUrl = $"https://www.instagram.com/{normalizedHandle}/";
@@ -61,6 +62,16 @@ internal sealed class ApifyInstagramInspectionProvider(
             .Take(desiredNewPosts)
             .ToList();
 
+        var refreshedPosts = discoveredPosts
+            .Where(x => knownIds.Contains(x.ExternalId))
+            .Take(refreshExistingPostsCount)
+            .ToList();
+
+        var inspectedPosts = newPosts
+            .Concat(refreshedPosts)
+            .DistinctBy(x => x.ExternalId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         var seenPostExternalIds = discoveredPosts
             .Select(x => x.ExternalId)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -83,9 +94,9 @@ internal sealed class ApifyInstagramInspectionProvider(
             ProfileImageUrl = profileData.ProfileImageUrl,
             Bio = profileData.Bio,
             FollowersCount = profileData.FollowersCount,
-            ResearchSummary = BuildResearchSummary(normalizedHandle, researchPrompt, seenPostExternalIds.Count, newPosts, averageViews, strongestPost),
+            ResearchSummary = BuildResearchSummary(normalizedHandle, researchPrompt, seenPostExternalIds.Count, newPosts, refreshedPosts.Count, averageViews, strongestPost),
             SeenPostExternalIds = seenPostExternalIds,
-            Posts = newPosts
+            Posts = inspectedPosts
         };
     }
 
@@ -220,16 +231,17 @@ internal sealed class ApifyInstagramInspectionProvider(
         string researchPrompt,
         int seenCount,
         IReadOnlyCollection<InspectedPostPayload> newPosts,
+        int refreshedPostsCount,
         double averageViews,
         InspectedPostPayload? strongestPost)
     {
         if (newPosts.Count == 0)
         {
-            return $"Apify audit for @{handle}. No new public reels required analysis. {seenCount} public reels were already known.";
+            return $"Apify audit for @{handle}. No new public reels required analysis. {refreshedPostsCount} known reels were refreshed. {seenCount} public reels were already known.";
         }
 
         return
-            $"Apify audit for @{handle}. {newPosts.Count} new public reels were analyzed and {Math.Max(0, seenCount - newPosts.Count)} were already known. Average estimated views: {averageViews:0}. Strongest new reel: {strongestPost?.Views ?? 0:n0} estimated views. Prompt focus: {researchPrompt}";
+            $"Apify audit for @{handle}. {newPosts.Count} new public reels were analyzed, {refreshedPostsCount} known reels were refreshed, and {Math.Max(0, seenCount - newPosts.Count)} were already known. Average estimated views: {averageViews:0}. Strongest new reel: {strongestPost?.Views ?? 0:n0} estimated views. Prompt focus: {researchPrompt}";
     }
 
     private async Task<List<InspectedPostPayload>> MapPostsAsync(

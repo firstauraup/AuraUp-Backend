@@ -35,6 +35,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
         var knownIds = new HashSet<string>(request.KnownPostExternalIds, StringComparer.OrdinalIgnoreCase);
         var startFromPostIndex = Math.Max(0, request.StartFromPostIndex);
         var desiredNewPosts = ResolveDesiredNewPosts(request.DesiredNewPosts);
+        var refreshExistingPostsCount = Math.Max(0, request.RefreshExistingPostsCount);
         var discoveryLimit = ResolveDiscoveryLimit(_options.RpaMaxPosts, request.MaxDiscoveryPosts, desiredNewPosts, startFromPostIndex);
         var sessionStatePath = ResolveSessionStatePath(_options.RpaSessionStatePath);
         var connectionState = await instagramConnectionAutomation.EnsureConnectedAsync(cancellationToken);
@@ -192,39 +193,71 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 .Skip(startFromPostIndex)
                 .ToList();
 
-            var candidatePostLinks = visiblePostLinks
+            var newCandidatePostLinks = visiblePostLinks
                 .Where(postUrl => !knownIds.Contains(ExtractExternalId(postUrl, normalizedHandle, 0)))
                 .ToList();
 
-            var seenExternalIds = candidatePostLinks
+            var refreshCandidatePostLinks = profileData.PostLinks
+                .Where(postUrl => knownIds.Contains(ExtractExternalId(postUrl, normalizedHandle, 0)))
+                .Take(refreshExistingPostsCount)
+                .ToList();
+
+            var inspectionCandidates = newCandidatePostLinks
+                .Take(desiredNewPosts)
+                .Select(postUrl => new RpaInspectionCandidate(
+                    postUrl,
+                    ExtractExternalId(postUrl, normalizedHandle, 0),
+                    IsRefresh: false))
+                .Concat(refreshCandidatePostLinks.Select(postUrl => new RpaInspectionCandidate(
+                    postUrl,
+                    ExtractExternalId(postUrl, normalizedHandle, 0),
+                    IsRefresh: true)))
+                .DistinctBy(candidate => candidate.ExternalId, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var seenExternalIds = newCandidatePostLinks
+                .Concat(refreshCandidatePostLinks)
                 .Select(postUrl => ExtractExternalId(postUrl, normalizedHandle, 0))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             var activeContext = context ?? throw new InvalidOperationException("RPA browser context was not available after profile extraction.");
 
             var posts = new List<InspectedPostPayload>();
-            foreach (var postUrl in candidatePostLinks)
+            foreach (var candidate in inspectionCandidates)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var externalId = ExtractExternalId(postUrl, normalizedHandle, 0);
                 try
                 {
-                    ReportProgress(request.JobId, "Reading reel", postUrl, posts.Count, seenExternalIds.Count, posts.Count);
-                    var post = await ExtractPostAsync(activeContext, postUrl, normalizedHandle, externalId, posts.Count, cancellationToken);
+                    ReportProgress(
+                        request.JobId,
+                        candidate.IsRefresh ? "Refreshing reel metrics" : "Reading reel",
+                        candidate.PostUrl,
+                        posts.Count,
+                        seenExternalIds.Count,
+                        posts.Count);
+                    var post = await ExtractPostAsync(
+                        activeContext,
+                        candidate.PostUrl,
+                        normalizedHandle,
+                        candidate.ExternalId,
+                        posts.Count,
+                        cancellationToken);
                     if (post is not null)
                     {
                         posts.Add(post);
-                        ReportProgress(request.JobId, "Reel analyzed", post.Caption, posts.Count, seenExternalIds.Count, posts.Count);
-                        if (posts.Count >= desiredNewPosts)
-                        {
-                            break;
-                        }
+                        ReportProgress(
+                            request.JobId,
+                            candidate.IsRefresh ? "Reel metrics refreshed" : "Reel analyzed",
+                            post.Caption,
+                            posts.Count,
+                            seenExternalIds.Count,
+                            posts.Count);
                     }
                 }
                 catch (Exception exception)
                 {
-                    logger.LogWarning(exception, "RPA could not read post {PostUrl}", postUrl);
+                    logger.LogWarning(exception, "RPA could not read post {PostUrl}", candidate.PostUrl);
                 }
             }
 
@@ -234,9 +267,13 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     $"RPA found the profile for @{normalizedHandle}, but could not extract any post details.");
             }
 
-            var averageViews = posts.Count == 0 ? 0 : posts.Average(x => x.Views);
-            var strongestPost = posts.OrderByDescending(x => x.Views).FirstOrDefault();
-            var failedCandidateCount = Math.Max(0, seenExternalIds.Count - posts.Count);
+            var newPosts = posts
+                .Where(post => !knownIds.Contains(post.ExternalId))
+                .ToList();
+            var refreshedPostsCount = posts.Count - newPosts.Count;
+            var averageViews = newPosts.Count == 0 ? 0 : newPosts.Average(x => x.Views);
+            var strongestPost = newPosts.OrderByDescending(x => x.Views).FirstOrDefault();
+            var failedCandidateCount = Math.Max(0, inspectionCandidates.Count - posts.Count);
 
             return new InspectionPayload
             {
@@ -249,8 +286,8 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     posts.Count == 0
                         ? $"RPA audit for @{normalizedHandle}. No new reels required analysis."
                         : failedCandidateCount == 0
-                            ? $"RPA audit for @{normalizedHandle}. {posts.Count} new reels were analyzed. Average estimated views: {averageViews:0}. Strongest new reel: {strongestPost?.Views ?? 0:n0} views. Prompt focus: {researchPrompt}"
-                            : $"RPA audit for @{normalizedHandle}. {posts.Count} new reels were analyzed and {failedCandidateCount} candidate reels could not be opened in this pass. Average estimated views: {averageViews:0}. Strongest new reel: {strongestPost?.Views ?? 0:n0} views. Prompt focus: {researchPrompt}",
+                            ? $"RPA audit for @{normalizedHandle}. {newPosts.Count} new reels were analyzed and {refreshedPostsCount} known reels were refreshed. Average estimated views: {averageViews:0}. Strongest new reel: {strongestPost?.Views ?? 0:n0} views. Prompt focus: {researchPrompt}"
+                            : $"RPA audit for @{normalizedHandle}. {newPosts.Count} new reels were analyzed, {refreshedPostsCount} known reels were refreshed, and {failedCandidateCount} candidate reels could not be opened in this pass. Average estimated views: {averageViews:0}. Strongest new reel: {strongestPost?.Views ?? 0:n0} views. Prompt focus: {researchPrompt}",
                 SeenPostExternalIds = seenExternalIds,
                 Posts = posts
             };
@@ -290,6 +327,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     StartFromPostIndex = request.StartFromPostIndex,
                     DesiredNewPosts = request.DesiredNewPosts,
                     MaxDiscoveryPosts = request.MaxDiscoveryPosts,
+                    RefreshExistingPostsCount = request.RefreshExistingPostsCount,
                     JobId = request.JobId,
                     ReconnectRetryAttempted = true
                 },
@@ -1541,6 +1579,11 @@ internal sealed partial class RpaInstagramInspectionProvider(
     private sealed record RpaProfileExtractionResult(
         IPage Page,
         RpaProfileData Profile);
+
+    private sealed record RpaInspectionCandidate(
+        string PostUrl,
+        string ExternalId,
+        bool IsRefresh);
 
     private sealed class RpaProfileSnapshot
     {

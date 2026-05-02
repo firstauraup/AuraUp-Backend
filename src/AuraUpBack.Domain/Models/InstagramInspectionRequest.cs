@@ -8,6 +8,7 @@ public sealed class InstagramInspectionRequest
     public int StartFromPostIndex { get; set; }
     public int DesiredNewPosts { get; set; }
     public int MaxDiscoveryPosts { get; set; }
+    public int RefreshExistingPostsCount { get; set; }
     public Guid? JobId { get; set; }
     public bool ReconnectRetryAttempted { get; set; }
 }

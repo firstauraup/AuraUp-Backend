@@ -26,6 +26,7 @@ internal sealed class InspectTrackedAccountCommandHandler(
             ?? throw new InvalidOperationException("Tracked account was not found.");
 
         const int batchSize = 30;
+        const int existingPostsRefreshCount = 12;
         const int maxBatches = 100;
         const int maxConsecutiveEmptyBatches = 3;
         var nowUtc = DateTime.UtcNow;
@@ -66,9 +67,10 @@ internal sealed class InspectTrackedAccountCommandHandler(
                     Handle = account.Handle,
                     ResearchPrompt = account.MonitoringPrompt,
                     KnownPostExternalIds = excludedExternalIds.ToArray(),
-                    StartFromPostIndex = excludedExternalIds.Count,
+                    StartFromPostIndex = 0,
                     DesiredNewPosts = batchSize,
                     MaxDiscoveryPosts = excludedExternalIds.Count + (batchSize * 4),
+                    RefreshExistingPostsCount = existingPostsRefreshCount,
                     JobId = command.JobId
                 },
                 cancellationToken);

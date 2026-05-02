@@ -25,6 +25,7 @@ internal sealed class MockInstagramInspectionProvider : IInstagramInspectionProv
         var researchPrompt = request.ResearchPrompt;
         var knownIds = new HashSet<string>(request.KnownPostExternalIds, StringComparer.OrdinalIgnoreCase);
         var startFromPostIndex = Math.Max(0, request.StartFromPostIndex);
+        var refreshExistingPostsCount = Math.Max(0, request.RefreshExistingPostsCount);
         var seed = Math.Abs(HashCode.Combine(normalizedHandle, researchPrompt, DateTime.UtcNow.Date));
         var random = new Random(seed);
         var today = DateTime.UtcNow.Date;
@@ -44,6 +45,16 @@ internal sealed class MockInstagramInspectionProvider : IInstagramInspectionProv
             .Take(desiredNewPosts)
             .ToList();
 
+        var refreshedPosts = discoveredPosts
+            .Where(x => knownIds.Contains(x.ExternalId))
+            .Take(refreshExistingPostsCount)
+            .ToList();
+
+        var inspectedPosts = posts
+            .Concat(refreshedPosts)
+            .DistinctBy(x => x.ExternalId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         var strongestPost = discoveredPosts.First();
         var averageViews = discoveredPosts.Average(x => x.Views);
 
@@ -55,9 +66,9 @@ internal sealed class MockInstagramInspectionProvider : IInstagramInspectionProv
             Bio = profile.Bio,
             FollowersCount = random.Next(profile.FollowersMin, profile.FollowersMax),
             ResearchSummary =
-                $"Audit for @{normalizedHandle}. {posts.Count} new reels analyzed, {discoveredPosts.Count - posts.Count} already known. Average views around {averageViews:0}. Top outlier reached {strongestPost.Views:n0} views with hook '{strongestPost.Caption[..Math.Min(strongestPost.Caption.Length, 52)]}...'. Prompt focus: {researchPrompt}",
+                $"Audit for @{normalizedHandle}. {posts.Count} new reels analyzed, {refreshedPosts.Count} known reels refreshed, {discoveredPosts.Count - posts.Count} already known. Average views around {averageViews:0}. Top outlier reached {strongestPost.Views:n0} views with hook '{strongestPost.Caption[..Math.Min(strongestPost.Caption.Length, 52)]}...'. Prompt focus: {researchPrompt}",
             SeenPostExternalIds = discoveredPosts.Select(x => x.ExternalId).ToList(),
-            Posts = posts
+            Posts = inspectedPosts
         });
     }
 
