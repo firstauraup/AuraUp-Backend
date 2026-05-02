@@ -12,7 +12,7 @@ internal sealed class InspectionJobBackgroundService(
     ILogger<InspectionJobBackgroundService> logger)
     : BackgroundService
 {
-    private const int WorkerCount = 2;
+    private const int WorkerCount = 1;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -27,19 +27,30 @@ internal sealed class InspectionJobBackgroundService(
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            var job = await inspectionJobQueue.DequeueAsync(stoppingToken);
-            inspectionJobQueue.MarkRunning(job.JobId);
+            InspectionJobRequest? job = null;
 
             try
             {
+                job = await inspectionJobQueue.DequeueAsync(stoppingToken);
+                inspectionJobQueue.MarkRunning(job.JobId);
+
                 await commandDispatcher.SendAsync(new InspectTrackedAccountCommand(job.AccountId, job.JobId), stoppingToken);
                 inspectionJobQueue.MarkCompleted(job.JobId);
                 logger.LogInformation("Inspection job {JobId} completed for account {AccountId}", job.JobId, job.AccountId);
             }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+            }
             catch (Exception exception)
             {
-                inspectionJobQueue.MarkFailed(job.JobId, exception.Message);
-                logger.LogError(exception, "Inspection job {JobId} failed for account {AccountId}", job.JobId, job.AccountId);
+                if (job is not null)
+                {
+                    inspectionJobQueue.MarkFailed(job.JobId, exception.Message);
+                    logger.LogError(exception, "Inspection job {JobId} failed for account {AccountId}", job.JobId, job.AccountId);
+                    continue;
+                }
+
+                logger.LogError(exception, "Inspection worker failed before a job could be claimed.");
             }
         }
     }

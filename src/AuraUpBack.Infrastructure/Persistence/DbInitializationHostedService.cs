@@ -13,7 +13,50 @@ internal sealed class DbInitializationHostedService(
     ILogger<DbInitializationHostedService> logger)
     : IHostedService
 {
-    public async Task StartAsync(CancellationToken cancellationToken)
+    private CancellationTokenSource? _stoppingTokenSource;
+    private Task? _initializationTask;
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        _stoppingTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _initializationTask = InitializeAsync(_stoppingTokenSource.Token);
+        return Task.CompletedTask;
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        if (_stoppingTokenSource is null || _initializationTask is null)
+        {
+            return;
+        }
+
+        await _stoppingTokenSource.CancelAsync();
+
+        try
+        {
+            await _initializationTask.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task InitializeAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await InitializeDatabaseAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Database initialization failed. The API will keep running and return request-level errors until storage is available.");
+        }
+    }
+
+    private async Task InitializeDatabaseAsync(CancellationToken cancellationToken)
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         await dbContext.Database.EnsureCreatedAsync(cancellationToken);
@@ -60,8 +103,6 @@ internal sealed class DbInitializationHostedService(
         dbContext.InstagramConnections.AddRange(snapshot.InstagramConnections);
         await dbContext.SaveChangesAsync(cancellationToken);
     }
-
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     private static async Task<bool> HasAnyDataAsync(AuraUpBackDbContext dbContext, CancellationToken cancellationToken)
     {

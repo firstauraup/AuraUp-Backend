@@ -75,7 +75,8 @@ builder.Services.AddCors(options =>
             .WithOrigins(allowedCorsOrigins)
             .AllowAnyHeader()
             .AllowAnyMethod()
-            .AllowCredentials();
+            .AllowCredentials()
+            .SetPreflightMaxAge(TimeSpan.FromHours(1));
     });
 });
 
@@ -90,6 +91,40 @@ inspectionJobQueue.StatusChanged += status =>
 
 app.UseForwardedHeaders();
 app.UseCors("AuraUpFront");
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next(context);
+    }
+    catch (Exception exception)
+    {
+        var logger = context.RequestServices
+            .GetRequiredService<ILoggerFactory>()
+            .CreateLogger("AuraUpBack.Api.UnhandledRequestException");
+        logger.LogError(
+            exception,
+            "Unhandled request error for {Method} {Path}",
+            context.Request.Method,
+            context.Request.Path);
+
+        if (context.Response.HasStarted)
+        {
+            throw;
+        }
+
+        context.Response.Clear();
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            error = "ServerError",
+            message = app.Environment.IsDevelopment()
+                ? exception.Message
+                : "The server could not complete the request."
+        });
+    }
+});
 app.UseMiddleware<AdminAuthMiddleware>();
 
 app.MapGet("/", () => Results.Ok(new
@@ -97,6 +132,13 @@ app.MapGet("/", () => Results.Ok(new
     service = "AuraUpBack",
     status = "running",
     mode = "mvp"
+}));
+
+app.MapGet("/healthz", () => Results.Ok(new
+{
+    service = "AuraUpBack",
+    status = "healthy",
+    checkedAtUtc = DateTime.UtcNow
 }));
 
 app.MapHub<AdminEventsHub>("/hubs/admin-events");

@@ -23,63 +23,75 @@ public sealed class MonitoringBackgroundService(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var delay = TimeSpan.FromSeconds(Math.Max(10, options.Value.MonitoringLoopSeconds));
+        await Task.Delay(delay, stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            if (ShouldPauseMonitoringForManualInstagram(instagramSettingsService.Current.Provider, instagramOptions.Value))
+            try
             {
-                var instagramState = await instagramConnectionAutomation.GetStatusAsync(stoppingToken);
-                if (instagramState.Status != InstagramConnectionStatus.Connected)
+                if (ShouldPauseMonitoringForManualInstagram(instagramSettingsService.Current.Provider, instagramOptions.Value))
                 {
-                    logger.LogInformation(
-                        "Monitoring paused while Instagram manual login is pending. Current status: {Status}",
-                        instagramState.Status);
-                    await Task.Delay(delay, stoppingToken);
-                    continue;
-                }
-            }
-
-            var accounts = await trackedAccountRepository.GetAllAsync(stoppingToken);
-            var nowUtc = DateTime.UtcNow;
-
-            var dueAccounts = accounts
-                .Where(x => x.MonitoringEnabled)
-                .Where(account =>
-                {
-                    var cadenceMinutes = Math.Max(1, account.CheckEveryMinutes);
-                    var latestJob = inspectionJobQueue.GetLatest(account.Id);
-                    var lastAttemptAtUtc = GetLastAttemptAtUtc(account, latestJob);
-                    var dueAtUtc = lastAttemptAtUtc.AddMinutes(cadenceMinutes);
-                    return dueAtUtc <= nowUtc;
-                })
-                .OrderBy(x => x.Handle, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            foreach (var account in dueAccounts)
-            {
-                try
-                {
-                    var latestJob = inspectionJobQueue.GetLatest(account.Id);
-                    if (latestJob is not null &&
-                        (latestJob.Status.Equals("Queued", StringComparison.OrdinalIgnoreCase) ||
-                         latestJob.Status.Equals("Running", StringComparison.OrdinalIgnoreCase)))
+                    var instagramState = await instagramConnectionAutomation.GetStatusAsync(stoppingToken);
+                    if (instagramState.Status != InstagramConnectionStatus.Connected)
                     {
+                        logger.LogInformation(
+                            "Monitoring paused while Instagram manual login is pending. Current status: {Status}",
+                            instagramState.Status);
+                        await Task.Delay(delay, stoppingToken);
                         continue;
                     }
-
-                    var job = inspectionJobQueue.Enqueue(account.Id, "Monitoring");
-                    logger.LogInformation(
-                        "Monitoreo encolado para @{Handle} con cadencia de {CadenceMinutes} minutos",
-                        account.Handle,
-                        Math.Max(1, account.CheckEveryMinutes));
                 }
-                catch (Exception exception)
+
+                var accounts = await trackedAccountRepository.GetAllAsync(stoppingToken);
+                var nowUtc = DateTime.UtcNow;
+
+                var dueAccounts = accounts
+                    .Where(x => x.MonitoringEnabled)
+                    .Where(account =>
+                    {
+                        var cadenceMinutes = Math.Max(1, account.CheckEveryMinutes);
+                        var latestJob = inspectionJobQueue.GetLatest(account.Id);
+                        var lastAttemptAtUtc = GetLastAttemptAtUtc(account, latestJob);
+                        var dueAtUtc = lastAttemptAtUtc.AddMinutes(cadenceMinutes);
+                        return dueAtUtc <= nowUtc;
+                    })
+                    .OrderBy(x => x.Handle, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                foreach (var account in dueAccounts)
                 {
-                    logger.LogError(exception, "Fallo el monitoreo para @{Handle}", account.Handle);
-                }
-            }
+                    try
+                    {
+                        var latestJob = inspectionJobQueue.GetLatest(account.Id);
+                        if (latestJob is not null &&
+                            (latestJob.Status.Equals("Queued", StringComparison.OrdinalIgnoreCase) ||
+                             latestJob.Status.Equals("Running", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            continue;
+                        }
 
-            await Task.Delay(delay, stoppingToken);
+                        var job = inspectionJobQueue.Enqueue(account.Id, "Monitoring");
+                        logger.LogInformation(
+                            "Monitoreo encolado para @{Handle} con cadencia de {CadenceMinutes} minutos",
+                            account.Handle,
+                            Math.Max(1, account.CheckEveryMinutes));
+                    }
+                    catch (Exception exception)
+                    {
+                        logger.LogError(exception, "Fallo el monitoreo para @{Handle}", account.Handle);
+                    }
+                }
+
+                await Task.Delay(delay, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Monitoring loop failed. It will retry after {DelaySeconds} seconds.", delay.TotalSeconds);
+                await Task.Delay(delay, stoppingToken);
+            }
         }
     }
 
