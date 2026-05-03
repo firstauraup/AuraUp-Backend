@@ -24,6 +24,8 @@ public sealed class TrackedPost
     public bool IsOutlier { get; set; }
     public string PerformanceLabel { get; set; } = "baseline";
     public string? Transcript { get; set; }
+    public string TranscriptHook { get; set; } = string.Empty;
+    public string TranscriptScript { get; set; } = string.Empty;
     public string Topic { get; set; } = string.Empty;
     public decimal TopicConfidence { get; set; }
     public string ContentAngle { get; set; } = string.Empty;
@@ -97,9 +99,15 @@ public sealed class TrackedPost
         PerformanceLabel = $"x{multiplier:0.##}";
     }
 
-    public void SetTranscript(string transcript, DateTime nowUtc)
+    public void SetTranscript(
+        string transcript,
+        string transcriptHook,
+        string transcriptScript,
+        DateTime nowUtc)
     {
         Transcript = transcript;
+        TranscriptHook = transcriptHook.Trim();
+        TranscriptScript = transcriptScript.Trim();
         var classification = PostTopicClassifier.Classify(Caption, transcript);
         Topic = classification.Topic;
         TopicConfidence = classification.TopicConfidence;

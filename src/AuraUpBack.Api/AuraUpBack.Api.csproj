@@ -9,6 +9,7 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-AuraUpBack.Api-0b9d46bb-b16c-4b83-bc03-a16d8900b28a</UserSecretsId>
   </PropertyGroup>
 
 </Project>

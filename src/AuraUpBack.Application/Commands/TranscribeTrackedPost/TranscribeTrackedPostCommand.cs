@@ -27,22 +27,32 @@ internal sealed class TranscribeTrackedPostCommandHandler(
             post.Id,
             post.Url);
 
-        var transcript = await videoTranscriptionService.TranscribeAsync(post.Url, post.Caption, cancellationToken);
-        post.SetTranscript(transcript, DateTime.UtcNow);
+        var transcription = await videoTranscriptionService.TranscribeAsync(post.Url, post.Caption, cancellationToken);
+        post.SetTranscript(
+            transcription.Transcript,
+            transcription.TranscriptHook,
+            transcription.TranscriptScript,
+            DateTime.UtcNow);
 
         logger.LogInformation(
-            "Guardando transcripción en DB para account {AccountId} post {PostId}. Texto: {Transcript}",
+            "Guardando transcripción en DB para account {AccountId} post {PostId}. Texto: {Transcript}. Hook: {Hook}",
             account.Id,
             post.Id,
-            transcript);
+            transcription.Transcript,
+            transcription.TranscriptHook);
 
         await trackedAccountRepository.UpsertAsync(account, cancellationToken);
         logger.LogInformation(
             "Transcripción guardada en DB para account {AccountId} post {PostId}. TranscriptLength: {TranscriptLength}.",
             account.Id,
             post.Id,
-            transcript.Length);
+            transcription.Transcript.Length);
 
-        return new TranscriptionResultDto(account.Id, post.Id, transcript);
+        return new TranscriptionResultDto(
+            account.Id,
+            post.Id,
+            transcription.Transcript,
+            transcription.TranscriptHook,
+            transcription.TranscriptScript);
     }
 }

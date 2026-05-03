@@ -4,7 +4,7 @@ namespace AuraUpBack.Infrastructure.Services;
 
 internal sealed class MockVideoTranscriptionService : IVideoTranscriptionService
 {
-    public Task<string> TranscribeAsync(string videoUrl, string caption, CancellationToken cancellationToken)
+    public Task<VideoTranscriptionResult> TranscribeAsync(string videoUrl, string caption, CancellationToken cancellationToken)
     {
         var shortCaption = caption.Length > 140 ? $"{caption[..140]}..." : caption;
 
@@ -18,6 +18,9 @@ internal sealed class MockVideoTranscriptionService : IVideoTranscriptionService
             $"Source: {videoUrl}"
         ]);
 
-        return Task.FromResult(transcript);
+        return Task.FromResult(new VideoTranscriptionResult(
+            transcript,
+            shortCaption,
+            "The creator sets up a clear promise, adds one concrete example, then closes with a short call to action."));
     }
 }

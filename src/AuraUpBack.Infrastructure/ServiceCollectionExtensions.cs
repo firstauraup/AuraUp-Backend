@@ -85,45 +85,80 @@ public static class ServiceCollectionExtensions
 
     private static string ResolveConnectionString(IConfiguration configuration, IHostEnvironment hostEnvironment)
     {
+        var explicitConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__AuraUpBack");
+        if (!string.IsNullOrWhiteSpace(explicitConnectionString))
+        {
+            return NormalizeConnectionString(explicitConnectionString, configuration, hostEnvironment);
+        }
+
+        var postgresUrl = configuration["DATABASE_PRIVATE_URL"]
+            ?? configuration["DATABASE_URL"]
+            ?? Environment.GetEnvironmentVariable("DATABASE_PRIVATE_URL")
+            ?? Environment.GetEnvironmentVariable("DATABASE_URL")
+            ?? Environment.GetEnvironmentVariable("POSTGRES_URL");
+
+        if (!string.IsNullOrWhiteSpace(postgresUrl))
+        {
+            return BuildNpgsqlConnectionString(postgresUrl, configuration);
+        }
+
         var configuredConnectionString = configuration.GetConnectionString("AuraUpBack");
         if (!string.IsNullOrWhiteSpace(configuredConnectionString))
         {
-            var normalizedConnectionString = configuredConnectionString
-                .Replace("{contentRoot}", hostEnvironment.ContentRootPath, StringComparison.OrdinalIgnoreCase);
-
-            if (!normalizedConnectionString.StartsWith("jdbc:postgresql://", StringComparison.OrdinalIgnoreCase))
-            {
-                return normalizedConnectionString;
-            }
-
-            return BuildNpgsqlConnectionString(normalizedConnectionString, configuration);
+            return NormalizeConnectionString(configuredConnectionString, configuration, hostEnvironment);
         }
 
         return BuildNpgsqlConnectionString("jdbc:postgresql://localhost:5432/auraUp-Db", configuration);
     }
 
-    private static string BuildNpgsqlConnectionString(string jdbcUrl, IConfiguration configuration)
+    private static string NormalizeConnectionString(string connectionString, IConfiguration configuration, IHostEnvironment hostEnvironment)
     {
-        var jdbcPrefix = "jdbc:postgresql://";
-        if (!jdbcUrl.StartsWith(jdbcPrefix, StringComparison.OrdinalIgnoreCase))
+        var normalizedConnectionString = connectionString
+            .Replace("{contentRoot}", hostEnvironment.ContentRootPath, StringComparison.OrdinalIgnoreCase)
+            .Trim();
+
+        if (normalizedConnectionString.StartsWith("jdbc:postgresql://", StringComparison.OrdinalIgnoreCase) ||
+            normalizedConnectionString.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase) ||
+            normalizedConnectionString.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException("The PostgreSQL JDBC URL must start with 'jdbc:postgresql://'.");
+            return BuildNpgsqlConnectionString(normalizedConnectionString, configuration);
         }
 
-        var uri = new Uri("http://" + jdbcUrl[jdbcPrefix.Length..]);
+        return AddConnectionDefaults(normalizedConnectionString);
+    }
+
+    private static string BuildNpgsqlConnectionString(string postgresUrl, IConfiguration configuration)
+    {
+        const string jdbcPrefix = "jdbc:postgresql://";
+        var uriValue = postgresUrl.StartsWith(jdbcPrefix, StringComparison.OrdinalIgnoreCase)
+            ? "postgresql://" + postgresUrl[jdbcPrefix.Length..]
+            : postgresUrl;
+
+        if (!uriValue.StartsWith("postgresql://", StringComparison.OrdinalIgnoreCase) &&
+            !uriValue.StartsWith("postgres://", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The PostgreSQL URL must start with 'postgresql://', 'postgres://', or 'jdbc:postgresql://'.");
+        }
+
+        var uri = new Uri(uriValue);
         var databaseName = uri.AbsolutePath.Trim('/');
         if (string.IsNullOrWhiteSpace(databaseName))
         {
-            throw new InvalidOperationException("The PostgreSQL JDBC URL must include the database name.");
+            throw new InvalidOperationException("The PostgreSQL URL must include the database name.");
         }
 
-        var username = configuration["ConnectionStrings:AuraUpBackUsername"]
+        var (userFromUrl, passwordFromUrl) = ReadUserInfo(uri);
+        var username = userFromUrl
+            ?? configuration["ConnectionStrings:AuraUpBackUsername"]
             ?? Environment.GetEnvironmentVariable("AURAUPBACK_DB_USERNAME")
+            ?? Environment.GetEnvironmentVariable("PGUSER")
             ?? Environment.GetEnvironmentVariable("POSTGRES_USER")
             ?? "postgres";
 
-        var password = configuration["ConnectionStrings:AuraUpBackPassword"]
+        var password = passwordFromUrl
+            ?? configuration["ConnectionStrings:AuraUpBackPassword"]
             ?? Environment.GetEnvironmentVariable("AURAUPBACK_DB_PASSWORD")
+            ?? Environment.GetEnvironmentVariable("PGPASSWORD")
             ?? Environment.GetEnvironmentVariable("POSTGRES_PASSWORD")
             ?? "postgres";
 
@@ -133,10 +168,67 @@ public static class ServiceCollectionExtensions
             Port = uri.Port > 0 ? uri.Port : 5432,
             Database = databaseName,
             Username = username,
-            Password = password
+            Password = password,
+            Timeout = 15,
+            CommandTimeout = 30
         };
 
+        ApplyQueryOptions(builder, uri);
+
         return builder.ConnectionString;
+    }
+
+    private static string AddConnectionDefaults(string connectionString)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(connectionString);
+        if (builder.Timeout <= 0)
+        {
+            builder.Timeout = 15;
+        }
+
+        if (builder.CommandTimeout <= 0)
+        {
+            builder.CommandTimeout = 30;
+        }
+
+        return builder.ConnectionString;
+    }
+
+    private static (string? Username, string? Password) ReadUserInfo(Uri uri)
+    {
+        if (string.IsNullOrWhiteSpace(uri.UserInfo))
+        {
+            return (null, null);
+        }
+
+        var parts = uri.UserInfo.Split(':', 2);
+        var username = Uri.UnescapeDataString(parts[0]);
+        var password = parts.Length > 1 ? Uri.UnescapeDataString(parts[1]) : null;
+        return (string.IsNullOrWhiteSpace(username) ? null : username, password);
+    }
+
+    private static void ApplyQueryOptions(NpgsqlConnectionStringBuilder builder, Uri uri)
+    {
+        if (string.IsNullOrWhiteSpace(uri.Query))
+        {
+            return;
+        }
+
+        foreach (var parameter in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = parameter.Split('=', 2);
+            if (parts.Length != 2 ||
+                !parts[0].Equals("sslmode", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = Uri.UnescapeDataString(parts[1]);
+            if (Enum.TryParse<SslMode>(value, ignoreCase: true, out var sslMode))
+            {
+                builder.SslMode = sslMode;
+            }
+        }
     }
 
     private static void ApplyTranscriptionEnvironmentOverrides(IConfiguration configuration, TranscriptionOptions options)

@@ -29,6 +29,8 @@ internal static class AccountMappings
                 x.IsOutlier,
                 x.PerformanceLabel,
                 x.Transcript,
+                x.TranscriptHook,
+                x.TranscriptScript,
                 x.Topic,
                 x.TopicConfidence,
                 x.ContentAngle,

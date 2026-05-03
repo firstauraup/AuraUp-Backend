@@ -19,7 +19,9 @@ internal sealed class DbInitializationHostedService(
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _stoppingTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _initializationTask = InitializeAsync(_stoppingTokenSource.Token);
+        _initializationTask = Task.Run(
+            () => InitializeAsync(_stoppingTokenSource.Token),
+            CancellationToken.None);
         return Task.CompletedTask;
     }
 
@@ -66,6 +68,7 @@ internal sealed class DbInitializationHostedService(
         await EnsureTrackedPostsIsReelColumnAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsSharesColumnAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsSplitMetricsColumnsAsync(dbContext, cancellationToken);
+        await EnsureTrackedPostsTranscriptDetailColumnsAsync(dbContext, cancellationToken);
         await EnsureAccountMetricSnapshotsTableAsync(dbContext, cancellationToken);
         await EnsureUserTablesAsync(dbContext, cancellationToken);
         await EnsureViralIdeaTablesAsync(dbContext, cancellationToken);
@@ -183,6 +186,17 @@ internal sealed class DbInitializationHostedService(
             ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "FbPlayCount" bigint NOT NULL DEFAULT 0;
             ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "FbLikes" bigint NOT NULL DEFAULT 0;
             ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "FbComments" bigint NOT NULL DEFAULT 0;
+            """;
+
+        await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task EnsureTrackedPostsTranscriptDetailColumnsAsync(AuraUpBackDbContext dbContext, CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "TranscriptHook" character varying(1000) NOT NULL DEFAULT '';
+            ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "TranscriptScript" character varying(12000) NOT NULL DEFAULT '';
             """;
 
         await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);

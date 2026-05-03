@@ -20,6 +20,8 @@ public sealed record PostSummaryDto(
     bool IsOutlier,
     string PerformanceLabel,
     string? Transcript,
+    string TranscriptHook,
+    string TranscriptScript,
     string Topic,
     decimal TopicConfidence,
     string ContentAngle,

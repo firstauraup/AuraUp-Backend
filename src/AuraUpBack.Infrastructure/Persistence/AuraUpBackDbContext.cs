@@ -66,6 +66,8 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
             entity.Property(x => x.Url).HasMaxLength(1_000);
             entity.Property(x => x.ThumbnailUrl).HasMaxLength(1_000);
             entity.Property(x => x.ThumbnailObjectKey).HasMaxLength(1_000);
+            entity.Property(x => x.TranscriptHook).HasMaxLength(1_000);
+            entity.Property(x => x.TranscriptScript).HasMaxLength(12_000);
             entity.Property(x => x.Topic).HasMaxLength(120);
             entity.Property(x => x.ContentAngle).HasMaxLength(240);
             entity.Property(x => x.HookStyle).HasMaxLength(120);

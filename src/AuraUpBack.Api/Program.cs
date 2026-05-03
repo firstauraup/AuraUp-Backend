@@ -38,18 +38,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Playwright;
 
 var builder = WebApplication.CreateBuilder(args);
-var allowedCorsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-    ?.Where(origin => !string.IsNullOrWhiteSpace(origin))
-    .Select(origin => origin.Trim().TrimEnd('/'))
-    .Distinct(StringComparer.OrdinalIgnoreCase)
-    .ToArray()
-    ?? [
-        "https://www.auraup.org", 
-        "https://auraup.org",
-        "http://localhost:5173",
-        "https://localhost:5173",
-        "http://localhost:5000",
-        "https://localhost:5000"];
+var allowedCorsOrigins = ResolveAllowedCorsOrigins(builder.Configuration);
 
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration, enableMonitoringService: true);
@@ -1403,6 +1392,8 @@ static async Task<AuraUpBack.Application.Contracts.TrackedAccountOverviewDto> To
             post.IsOutlier,
             post.PerformanceLabel,
             post.Transcript,
+            post.TranscriptHook,
+            post.TranscriptScript,
             post.Topic,
             post.TopicConfidence,
             post.ContentAngle,
@@ -1661,6 +1652,37 @@ app.MapPost("/api/accounts/{accountId:guid}/posts/{postId:guid}/transcribe", asy
 });
 
 app.Run();
+
+static string[] ResolveAllowedCorsOrigins(IConfiguration configuration)
+{
+    var origins = configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+        ?? SplitOrigins(configuration["Cors:AllowedOrigins"])
+        ?? SplitOrigins(Environment.GetEnvironmentVariable("CORS_ALLOWED_ORIGINS"))
+        ?? [
+            "https://www.auraup.org",
+            "https://auraup.org",
+            "https://admin.auraup.org",
+            "http://localhost:5173",
+            "https://localhost:5173",
+            "http://localhost:5000",
+            "https://localhost:5000"];
+
+    return origins
+        .Where(origin => !string.IsNullOrWhiteSpace(origin))
+        .Select(origin => origin.Trim().TrimEnd('/'))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+}
+
+static string[]? SplitOrigins(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return null;
+    }
+
+    return value.Split([',', ';', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+}
 
 public sealed record RegisterTrackedAccountRequest(
     string Handle,
