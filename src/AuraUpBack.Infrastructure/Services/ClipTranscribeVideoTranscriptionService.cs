@@ -13,7 +13,8 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     IOptions<TranscriptionOptions> options,
     ILogger<ClipTranscribeVideoTranscriptionService> logger) : IVideoTranscriptionService
 {
-    private const int InitialGenerationWaitSeconds = 15;
+    private const int InitialGenerationWaitSeconds = 3;
+    private const int GeneratedScriptWaitSeconds = 45;
     private const int ProgressLogIntervalSeconds = 15;
     private static readonly Regex MarketingNoiseRegex = new(
         "transcribe tiktok|instagram reels to text|youtube shorts to text|no credit card required|upgrade to pro|start creating for free|simple pricing|explore tools|how it works|built for modern creators|formato corto|formato largo|preguntas frecuentes|iniciar sesión|inicia sesión|short format|long format|faq|log in|sign in|creators|transcriptions|saves me hours|best transcription tool|hook generator",
@@ -736,6 +737,35 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 
     private static async Task SubmitLoginAsync(IPage page, ILocator passwordInput)
     {
+        foreach (var selector in new[]
+                 {
+                     "form button[type='submit']",
+                     "button[type='submit']"
+                 })
+        {
+            var submitButton = page.Locator(selector).First;
+            try
+            {
+                await submitButton.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 1_000
+                });
+
+                await submitButton.ClickAsync(new LocatorClickOptions
+                {
+                    Force = true
+                });
+                return;
+            }
+            catch (TimeoutException)
+            {
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
         foreach (var label in new[]
                  {
                      "Continue",
@@ -879,6 +909,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     bodyText.includes('dashboard') ||
                     bodyText.includes('my account') ||
                     bodyText.includes('account settings') ||
+                    bodyText.includes('pro history') ||
                     bodyText.includes('cerrar sesión') ||
                     bodyText.includes('mi cuenta');
                 }
@@ -1204,13 +1235,15 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     "Usando transcript detectado en el panel real de ClipTranscribe para {VideoUrl}. Texto: {Transcript}",
                     videoUrl,
                     transcript);
-                return BuildTranscriptionResult(transcript, ClipTranscribeGeneratedScript.Empty);
+                var generatedScript = await TryCreateMyVersionAsync(page, videoUrl, cancellationToken);
+                return BuildTranscriptionResult(transcript, generatedScript);
             }
 
             var copiedTranscript = await TryCopyTranscriptAsync(page, videoUrl);
             if (!string.IsNullOrWhiteSpace(copiedTranscript))
             {
-                return BuildTranscriptionResult(copiedTranscript, ClipTranscribeGeneratedScript.Empty);
+                var generatedScript = await TryCreateMyVersionAsync(page, videoUrl, cancellationToken);
+                return BuildTranscriptionResult(copiedTranscript, generatedScript);
             }
 
             var pageError = await TryReadProcessingErrorAsync(page);
@@ -1282,6 +1315,190 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 
         throw new InvalidOperationException(
             $"ClipTranscribe timed out after {timeout.TotalSeconds:0} seconds while transcribing '{videoUrl}'.");
+    }
+
+    private async Task<ClipTranscribeGeneratedScript> TryCreateMyVersionAsync(
+        IPage page,
+        string videoUrl,
+        CancellationToken cancellationToken)
+    {
+        var existingGeneratedScript = await TryExtractGeneratedScriptAsync(page);
+        if (!existingGeneratedScript.IsEmpty)
+        {
+            return existingGeneratedScript;
+        }
+
+        try
+        {
+            var createButton = await ResolveCreateMyVersionButtonAsync(page);
+            if (createButton is null)
+            {
+                logger.LogWarning(
+                    "ClipTranscribe no mostró el botón Create My Version después del transcript para {VideoUrl}. Hook/script quedarán vacíos.",
+                    videoUrl);
+                return ClipTranscribeGeneratedScript.Empty;
+            }
+
+            if (await createButton.IsDisabledAsync())
+            {
+                logger.LogWarning(
+                    "El botón Create My Version está disabled para {VideoUrl}. Hook/script quedarán vacíos.",
+                    videoUrl);
+                return ClipTranscribeGeneratedScript.Empty;
+            }
+
+            await createButton.ScrollIntoViewIfNeededAsync();
+            await createButton.ClickAsync(new LocatorClickOptions
+            {
+                Force = true
+            });
+
+            logger.LogInformation(
+                "Botón Create My Version clickeado para {VideoUrl}. Esperando HOOK/FULL SCRIPT.",
+                videoUrl);
+
+            var deadlineUtc = DateTime.UtcNow.AddSeconds(GeneratedScriptWaitSeconds);
+            while (DateTime.UtcNow < deadlineUtc)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var generatedScript = await TryExtractGeneratedScriptAsync(page);
+                if (!generatedScript.IsEmpty)
+                {
+                    logger.LogInformation(
+                        "ClipTranscribe devolvió HOOK/FULL SCRIPT para {VideoUrl}. HookLength: {HookLength}. ScriptLength: {ScriptLength}.",
+                        videoUrl,
+                        generatedScript.Hook.Length,
+                        generatedScript.Script.Length);
+                    return generatedScript;
+                }
+
+                var pageError = await TryReadProcessingErrorAsync(page);
+                if (!string.IsNullOrWhiteSpace(pageError))
+                {
+                    logger.LogWarning(
+                        "ClipTranscribe mostró error generando Create My Version para {VideoUrl}: {Error}. Se conservará solo el transcript.",
+                        videoUrl,
+                        pageError);
+                    return ClipTranscribeGeneratedScript.Empty;
+                }
+
+                await Task.Delay(1_000, cancellationToken);
+            }
+
+            logger.LogWarning(
+                "ClipTranscribe no mostró HOOK/FULL SCRIPT después de {WaitSeconds} segundos para {VideoUrl}. Se conservará solo el transcript.",
+                GeneratedScriptWaitSeconds,
+                videoUrl);
+            return ClipTranscribeGeneratedScript.Empty;
+        }
+        catch (Exception exception) when (IsRecoverableBrowserAutomationException(exception))
+        {
+            logger.LogWarning(
+                exception,
+                "ClipTranscribe no pudo completar Create My Version para {VideoUrl}. Se conservará solo el transcript.",
+                videoUrl);
+            return ClipTranscribeGeneratedScript.Empty;
+        }
+    }
+
+    private static async Task<ILocator?> ResolveCreateMyVersionButtonAsync(IPage page)
+    {
+        foreach (var selector in new[]
+                 {
+                     "button:has-text('Create My Version')",
+                     "button.gradient-btn:has-text('Create My Version')"
+                 })
+        {
+            var locator = page.Locator(selector).First;
+            try
+            {
+                await locator.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 1_000
+                });
+
+                return locator;
+            }
+            catch (TimeoutException)
+            {
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
+        foreach (var label in new[] { "Create My Version", "Crear mi versión", "Crear mi version" })
+        {
+            var locator = page.GetByRole(AriaRole.Button, new PageGetByRoleOptions
+            {
+                Name = label
+            }).First;
+
+            try
+            {
+                await locator.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 1_000
+                });
+
+                return locator;
+            }
+            catch (TimeoutException)
+            {
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<ClipTranscribeGeneratedScript> TryExtractGeneratedScriptAsync(IPage page)
+    {
+        var generatedText = await TryReadGeneratedScriptPanelTextAsync(page);
+        return string.IsNullOrWhiteSpace(generatedText)
+            ? ClipTranscribeGeneratedScript.Empty
+            : ParseGeneratedScript(generatedText);
+    }
+
+    private static async Task<string?> TryReadGeneratedScriptPanelTextAsync(IPage page)
+    {
+        foreach (var selector in new[]
+                 {
+                     "div.scrollbar-thin.max-h-72.overflow-y-auto.whitespace-pre-wrap",
+                     "div.whitespace-pre-wrap:has-text('HOOK:')",
+                     "div.scrollbar-thin:has-text('HOOK:'):has-text('FULL SCRIPT:')",
+                     "div:has-text('HOOK:'):has-text('FULL SCRIPT:')"
+                 })
+        {
+            var locator = page.Locator(selector).First;
+            try
+            {
+                await locator.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 500
+                });
+
+                var text = await locator.InnerTextAsync();
+                if (LooksLikeGeneratedScript(text))
+                {
+                    return text.Trim();
+                }
+            }
+            catch (TimeoutException)
+            {
+            }
+            catch (PlaywrightException)
+            {
+            }
+        }
+
+        return null;
     }
 
     private async Task<string?> TryCopyTranscriptAsync(IPage page, string videoUrl)
@@ -1689,6 +1906,82 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         return !string.IsNullOrWhiteSpace(value) &&
                value.Contains("HOOK:", StringComparison.OrdinalIgnoreCase) &&
                value.Contains("FULL SCRIPT:", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ClipTranscribeGeneratedScript ParseGeneratedScript(string value)
+    {
+        if (!LooksLikeGeneratedScript(value))
+        {
+            return ClipTranscribeGeneratedScript.Empty;
+        }
+
+        var normalized = NormalizeGeneratedScriptText(value);
+        var hook = MatchGeneratedSection(
+            normalized,
+            @"(?:^|\n)\s*HOOK\s*:\s*(?<value>.*?)(?=\n\s*FULL SCRIPT\s*:|$)");
+        var script = MatchGeneratedSection(
+            normalized,
+            @"(?:^|\n)\s*FULL SCRIPT\s*:\s*(?<value>.*?)(?=\n\s*(?:PREDICTED CLIPSCORE|Have a full YouTube video|No credit card required)|$)");
+
+        return string.IsNullOrWhiteSpace(hook) && string.IsNullOrWhiteSpace(script)
+            ? ClipTranscribeGeneratedScript.Empty
+            : new ClipTranscribeGeneratedScript(hook, script);
+    }
+
+    private static string MatchGeneratedSection(string value, string pattern)
+    {
+        var match = Regex.Match(value, pattern, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        if (!match.Success)
+        {
+            return string.Empty;
+        }
+
+        return NormalizeGeneratedSection(match.Groups["value"].Value);
+    }
+
+    private static string NormalizeGeneratedScriptText(string value)
+    {
+        var normalized = value
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Trim();
+
+        normalized = Regex.Replace(
+            normalized,
+            @"(?m)^\s*(?:✨\s*)?GENERATED SCRIPT\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase);
+
+        normalized = Regex.Replace(
+            normalized,
+            @"(?m)^\s*(?:Hide|Show|Copy|Copiar)\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase);
+
+        normalized = Regex.Replace(normalized, @"\n{3,}", "\n\n");
+        return normalized.Trim();
+    }
+
+    private static string NormalizeGeneratedSection(string value)
+    {
+        var normalized = value
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Trim();
+
+        normalized = Regex.Replace(
+            normalized,
+            @"(?m)^\s*(?:Hide|Show|Copy|Copiar)\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase);
+
+        normalized = Regex.Replace(
+            normalized,
+            @"\n\s*(?:PREDICTED CLIPSCORE|Have a full YouTube video|No credit card required).*$",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+        normalized = Regex.Replace(normalized, @"\n{3,}", "\n\n");
+        normalized = Regex.Replace(normalized, @"[ \t]{2,}", " ");
+        return normalized.Trim(' ', '"', '\'', '“', '”', '‘', '’');
     }
 
     private static bool IsValidTranscriptCandidate(string value)
