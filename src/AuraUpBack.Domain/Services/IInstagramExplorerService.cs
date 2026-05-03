@@ -16,4 +16,11 @@ public interface IInstagramExplorerService
         CancellationToken cancellationToken);
 
     Task<ExplorerAccountPreview> GetAccountPreviewAsync(string handle, CancellationToken cancellationToken);
+
+    Task<ExplorerReel?> GetReelAsync(string? reelUrl, CancellationToken cancellationToken);
+
+    Task<ExplorerAccountSnapshot> GetAccountSnapshotAsync(
+        string handle,
+        int reelCount,
+        CancellationToken cancellationToken);
 }

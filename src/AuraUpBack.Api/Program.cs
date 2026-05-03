@@ -12,9 +12,11 @@ using AuraUpBack.Application.Commands.ReconnectInstagramIntegration;
 using AuraUpBack.Application.Commands.RunExplorationRequest;
 using AuraUpBack.Application.Commands.StartInstagramManualLogin;
 using AuraUpBack.Application.Commands.SubmitApplicationForm;
+using AuraUpBack.Application.Commands.TranscribeExternalReel;
 using AuraUpBack.Application.Commands.TranscribeTrackedPost;
 using AuraUpBack.Application.Commands.UpdateTrackedAccountMonitoring;
 using AuraUpBack.Application.Commands.VerifyInstagramIntegrationCode;
+using AuraUpBack.Application.Queries.AnalyzeExternalReelAccount;
 using AuraUpBack.Application.Queries.GetInstagramIntegrationStatus;
 using AuraUpBack.Application.Queries.GetInstagramExplorerAccountPreview;
 using AuraUpBack.Application.Queries.GetTrackedAccountAnalysis;
@@ -1080,6 +1082,36 @@ app.MapGet("/api/explorer/accounts/{handle}", async (
     return Results.Ok(result);
 });
 
+app.MapPost("/api/reel-workbench/transcribe", async (
+    HttpContext httpContext,
+    ExternalReelRequest request,
+    ICommandDispatcher dispatcher,
+    CancellationToken cancellationToken) =>
+{
+    if (httpContext.RequireSession().IsClient())
+    {
+        return AuthorizationExtensions.ForbidAction("Clients cannot use reel workbench.");
+    }
+
+    var result = await dispatcher.SendAsync(new TranscribeExternalReelCommand(request.ReelUrl), cancellationToken);
+    return Results.Ok(result);
+});
+
+app.MapPost("/api/reel-workbench/analyze-account", async (
+    HttpContext httpContext,
+    ExternalReelRequest request,
+    IQueryDispatcher dispatcher,
+    CancellationToken cancellationToken) =>
+{
+    if (httpContext.RequireSession().IsClient())
+    {
+        return AuthorizationExtensions.ForbidAction("Clients cannot use reel workbench.");
+    }
+
+    var result = await dispatcher.QueryAsync(new AnalyzeExternalReelAccountQuery(request.ReelUrl), cancellationToken);
+    return Results.Ok(result);
+});
+
 app.MapPost("/api/explorations", async (
     HttpContext httpContext,
     CreateExplorationRequestRequest request,
@@ -1718,6 +1750,9 @@ public sealed record GenerateViralIdeasRequest(
     string Objective,
     IReadOnlyCollection<Guid>? SelectedPostIds,
     int? Count);
+
+public sealed record ExternalReelRequest(
+    string? ReelUrl);
 
 public sealed record ViralIdeaGenerationPreparation(
     Guid AccountId,

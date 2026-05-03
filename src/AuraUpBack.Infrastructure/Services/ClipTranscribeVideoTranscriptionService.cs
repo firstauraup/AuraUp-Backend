@@ -81,13 +81,46 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             }
         }
 
+        var clipTranscribeVideoUrls = BuildClipTranscribeVideoUrlVariants(videoUrl);
+        var clipTranscribeVideoUrlIndex = 0;
         var retriedAfterLogin = false;
         while (true)
         {
             VideoTranscriptionResult transcription;
             try
             {
-                transcription = await SubmitTranscriptionAsync(page, videoUrl, timeoutToken);
+                transcription = await SubmitTranscriptionAsync(
+                    page,
+                    clipTranscribeVideoUrls[clipTranscribeVideoUrlIndex],
+                    timeoutToken);
+            }
+            catch (ClipTranscribeProviderException exception)
+                when (clipTranscribeVideoUrlIndex + 1 < clipTranscribeVideoUrls.Count)
+            {
+                clipTranscribeVideoUrlIndex++;
+                var alternateVideoUrl = clipTranscribeVideoUrls[clipTranscribeVideoUrlIndex];
+                logger.LogWarning(
+                    exception,
+                    "ClipTranscribe rejected {VideoUrl}. Retrying with alternate Instagram URL {AlternateVideoUrl}.",
+                    exception.VideoUrl,
+                    alternateVideoUrl);
+
+                if (!await TryNavigateToTranscriptToolAsync(page, alternateVideoUrl))
+                {
+                    return await BuildFallbackTranscriptAsync(context, videoUrl, caption, cancellationToken);
+                }
+
+                continue;
+            }
+            catch (ClipTranscribeProviderException exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "ClipTranscribe rejected {VideoUrl}. Reason: {FailureReason}. Falling back to Instagram transcript extraction.",
+                    exception.VideoUrl,
+                    exception.ProviderMessage);
+
+                return await BuildFallbackTranscriptAsync(context, videoUrl, caption, cancellationToken);
             }
             catch (ClipTranscribeAuthenticationRequiredException exception) when (!retriedAfterLogin && hasLoginCredentials)
             {
@@ -317,7 +350,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     private async Task<VideoTranscriptionResult> SubmitTranscriptionAsync(IPage page, string videoUrl, CancellationToken cancellationToken)
     {
         await DismissDecorativeUiAsync(page);
-        var normalizedVideoUrl = NormalizeVideoUrlForClipTranscribe(videoUrl);
+        var normalizedVideoUrl = videoUrl.Trim();
 
         var input = await ResolveUrlInputAsync(page);
         logger.LogInformation("ClipTranscribe URL input resolved for {VideoUrl}.", normalizedVideoUrl);
@@ -413,8 +446,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             var pageError = await TryReadProcessingErrorAsync(page);
             if (!string.IsNullOrWhiteSpace(pageError))
             {
-                throw new InvalidOperationException(
-                    $"ClipTranscribe reported an error while transcribing '{videoUrl}': {pageError}");
+                throw new ClipTranscribeProviderException(videoUrl, pageError);
             }
 
             if (await HasSubmissionStartedAsync(page))
@@ -446,8 +478,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             var pageError = await TryReadProcessingErrorAsync(page);
             if (!string.IsNullOrWhiteSpace(pageError))
             {
-                throw new InvalidOperationException(
-                    $"ClipTranscribe reported an error while transcribing '{videoUrl}': {pageError}");
+                throw new ClipTranscribeProviderException(videoUrl, pageError);
             }
 
             if (await ResolveTranscriptPanelAsync(page) is not null)
@@ -948,16 +979,25 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         return new Uri(new Uri(_options.ClipTranscribeBaseUrl), path).ToString();
     }
 
-    private static string NormalizeVideoUrlForClipTranscribe(string videoUrl)
+    private static IReadOnlyList<string> BuildClipTranscribeVideoUrlVariants(string videoUrl)
     {
         var normalized = videoUrl.Trim();
-        normalized = Regex.Replace(
+        var reelsUrl = Regex.Replace(
             normalized,
             @"instagram\.com/reel/",
             "instagram.com/reels/",
             RegexOptions.IgnoreCase);
 
-        return normalized;
+        var reelUrl = Regex.Replace(
+            normalized,
+            @"instagram\.com/reels/",
+            "instagram.com/reel/",
+            RegexOptions.IgnoreCase);
+
+        return new[] { reelsUrl, reelUrl }
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static string ResolveSessionStatePath(string configuredPath)
@@ -1150,7 +1190,6 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         var startedAtUtc = DateTime.UtcNow;
         var timeout = TimeSpan.FromSeconds(Math.Max(30, _options.RequestTimeoutSeconds));
         var generationLogged = false;
-        var switchClickedBeforeCopy = false;
         var nextProgressLogAtUtc = startedAtUtc.AddSeconds(ProgressLogIntervalSeconds);
 
         while (DateTime.UtcNow - startedAtUtc < timeout)
@@ -1158,38 +1197,26 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             cancellationToken.ThrowIfCancellationRequested();
             var elapsedSeconds = (DateTime.UtcNow - startedAtUtc).TotalSeconds;
 
-            if (!switchClickedBeforeCopy && await HasTranscriptOutputAsync(page))
+            var transcript = await TryExtractTranscriptAsync(page, videoUrl);
+            if (!string.IsNullOrWhiteSpace(transcript))
             {
-                switchClickedBeforeCopy = await TryClickOutputSwitchAsync(page, videoUrl, "antes de copiar el transcript");
-                if (switchClickedBeforeCopy)
-                {
-                    await page.WaitForTimeoutAsync(500);
-                }
+                logger.LogInformation(
+                    "Usando transcript detectado en el panel real de ClipTranscribe para {VideoUrl}. Texto: {Transcript}",
+                    videoUrl,
+                    transcript);
+                return BuildTranscriptionResult(transcript, ClipTranscribeGeneratedScript.Empty);
             }
 
             var copiedTranscript = await TryCopyTranscriptAsync(page, videoUrl);
             if (!string.IsNullOrWhiteSpace(copiedTranscript))
             {
-                var generatedScript = await TryReadGeneratedScriptAfterSwitchAsync(page, videoUrl, cancellationToken);
-                return BuildTranscriptionResult(copiedTranscript, generatedScript);
-            }
-
-            var transcript = await TryExtractTranscriptAsync(page, videoUrl);
-            if (!string.IsNullOrWhiteSpace(transcript))
-            {
-                logger.LogInformation(
-                    "Copiando texto no estuvo disponible; usando texto detectado en pantalla para {VideoUrl}. Texto: {Transcript}",
-                    videoUrl,
-                    transcript);
-                var generatedScript = await TryReadGeneratedScriptAfterSwitchAsync(page, videoUrl, cancellationToken);
-                return BuildTranscriptionResult(transcript, generatedScript);
+                return BuildTranscriptionResult(copiedTranscript, ClipTranscribeGeneratedScript.Empty);
             }
 
             var pageError = await TryReadProcessingErrorAsync(page);
             if (!string.IsNullOrWhiteSpace(pageError))
             {
-                throw new InvalidOperationException(
-                    $"ClipTranscribe reported an error while transcribing '{videoUrl}': {pageError}");
+                throw new ClipTranscribeProviderException(videoUrl, pageError);
             }
 
             if (await IsStillWorkingAsync(page))
@@ -1328,88 +1355,6 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         return await page.Locator("button:has-text('Copy')").CountAsync() > 0;
     }
 
-    private async Task<bool> TryClickOutputSwitchAsync(IPage page, string videoUrl, string step)
-    {
-        var switches = page.Locator("button[role='switch'][aria-checked]");
-        var count = await switches.CountAsync();
-
-        for (var index = 0; index < count; index++)
-        {
-            var candidate = switches.Nth(index);
-            try
-            {
-                if (!await candidate.IsVisibleAsync() || await candidate.IsDisabledAsync())
-                {
-                    continue;
-                }
-
-                await candidate.ClickAsync(new LocatorClickOptions
-                {
-                    Force = true
-                });
-
-                logger.LogInformation(
-                    "Switch de ClipTranscribe presionado {Step} para {VideoUrl}.",
-                    step,
-                    videoUrl);
-                return true;
-            }
-            catch (PlaywrightException exception)
-            {
-                logger.LogDebug(
-                    exception,
-                    "No se pudo presionar un switch de ClipTranscribe {Step} para {VideoUrl}.",
-                    step,
-                    videoUrl);
-            }
-        }
-
-        logger.LogInformation(
-            "No se encontró switch visible de ClipTranscribe {Step} para {VideoUrl}.",
-            step,
-            videoUrl);
-        return false;
-    }
-
-    private async Task<ClipTranscribeGeneratedScript> TryReadGeneratedScriptAfterSwitchAsync(
-        IPage page,
-        string videoUrl,
-        CancellationToken cancellationToken)
-    {
-        if (!await TryClickOutputSwitchAsync(page, videoUrl, "después de copiar el transcript"))
-        {
-            return ClipTranscribeGeneratedScript.Empty;
-        }
-
-        var deadlineUtc = DateTime.UtcNow.AddSeconds(8);
-        while (DateTime.UtcNow < deadlineUtc)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var rawScript = await TryReadGeneratedScriptPanelTextAsync(page);
-            if (!string.IsNullOrWhiteSpace(rawScript))
-            {
-                var generatedScript = ParseGeneratedScript(rawScript);
-                if (!generatedScript.IsEmpty)
-                {
-                    logger.LogInformation(
-                        "Script generado detectado en ClipTranscribe para {VideoUrl}. Hook: {Hook}. ScriptLength: {ScriptLength}.",
-                        videoUrl,
-                        generatedScript.Hook,
-                        generatedScript.Script.Length);
-                    return generatedScript;
-                }
-            }
-
-            await Task.Delay(500, cancellationToken);
-        }
-
-        logger.LogInformation(
-            "ClipTranscribe no mostró el panel HOOK/FULL SCRIPT después del segundo switch para {VideoUrl}.",
-            videoUrl);
-        return ClipTranscribeGeneratedScript.Empty;
-    }
-
     private static VideoTranscriptionResult BuildTranscriptionResult(
         string transcript,
         ClipTranscribeGeneratedScript generatedScript)
@@ -1522,64 +1467,6 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         {
             return null;
         }
-    }
-
-    private static async Task<string?> TryReadGeneratedScriptPanelTextAsync(IPage page)
-    {
-        try
-        {
-            var generatedScriptPanel = await ResolveGeneratedScriptPanelAsync(page);
-            if (generatedScriptPanel is null)
-            {
-                return null;
-            }
-
-            var text = await generatedScriptPanel.InnerTextAsync();
-            return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
-        }
-        catch (TimeoutException)
-        {
-            return null;
-        }
-        catch (PlaywrightException)
-        {
-            return null;
-        }
-    }
-
-    private static async Task<ILocator?> ResolveGeneratedScriptPanelAsync(IPage page)
-    {
-        foreach (var selector in new[]
-                 {
-                     "div.scrollbar-thin.max-h-72.overflow-y-auto.rounded-xl",
-                     "div.scrollbar-thin:has-text('FULL SCRIPT:')",
-                     "div.scrollbar-thin:has-text('HOOK:')"
-                 })
-        {
-            var locator = page.Locator(selector).First;
-            try
-            {
-                await locator.WaitForAsync(new LocatorWaitForOptions
-                {
-                    State = WaitForSelectorState.Visible,
-                    Timeout = 500
-                });
-
-                var text = await locator.InnerTextAsync();
-                if (LooksLikeGeneratedScript(text))
-                {
-                    return locator;
-                }
-            }
-            catch (TimeoutException)
-            {
-            }
-            catch (PlaywrightException)
-            {
-            }
-        }
-
-        return null;
     }
 
     private static async Task<ClipTranscribeDiagnosticState> ReadDiagnosticStateAsync(IPage page)
@@ -1795,50 +1682,6 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         normalized = Regex.Replace(normalized, @"\n{3,}", "\n\n");
         normalized = Regex.Replace(normalized, @"[ \t]{2,}", " ");
         return normalized.Trim(' ', '"', '\'', '“', '”', '‘', '’');
-    }
-
-    private static ClipTranscribeGeneratedScript ParseGeneratedScript(string value)
-    {
-        if (!LooksLikeGeneratedScript(value))
-        {
-            return ClipTranscribeGeneratedScript.Empty;
-        }
-
-        var normalized = value
-            .Replace("\r", string.Empty, StringComparison.Ordinal)
-            .Trim();
-
-        var hook = MatchGeneratedSection(
-            normalized,
-            @"(?:^|\n)\s*HOOK\s*:\s*(?<value>.*?)(?=\n\s*FULL SCRIPT\s*:|$)");
-        var script = MatchGeneratedSection(
-            normalized,
-            @"(?:^|\n)\s*FULL SCRIPT\s*:\s*(?<value>.+)$");
-
-        return new ClipTranscribeGeneratedScript(hook, script);
-    }
-
-    private static string MatchGeneratedSection(string value, string pattern)
-    {
-        var match = Regex.Match(
-            value,
-            pattern,
-            RegexOptions.IgnoreCase | RegexOptions.Singleline);
-
-        if (!match.Success)
-        {
-            return string.Empty;
-        }
-
-        var section = match.Groups["value"].Value.Trim();
-        section = Regex.Replace(
-            section,
-            @"\s*(Copy|Copiar|Download|Descargar).*$",
-            string.Empty,
-            RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        section = Regex.Replace(section, @"\n{3,}", "\n\n");
-        section = Regex.Replace(section, @"[ \t]{2,}", " ");
-        return section.Trim(' ', '"', '\'', '“', '”', '‘', '’');
     }
 
     private static bool LooksLikeGeneratedScript(string value)
@@ -2193,4 +2036,11 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
     }
 
     private sealed class ClipTranscribeAuthenticationRequiredException(string message) : InvalidOperationException(message);
+
+    private sealed class ClipTranscribeProviderException(string videoUrl, string providerMessage)
+        : InvalidOperationException($"ClipTranscribe reported an error while transcribing '{videoUrl}': {providerMessage}")
+    {
+        public string VideoUrl { get; } = videoUrl;
+        public string ProviderMessage { get; } = providerMessage;
+    }
 }

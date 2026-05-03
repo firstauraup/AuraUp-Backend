@@ -11,9 +11,11 @@ using AuraUpBack.Application.Commands.ReconnectInstagramIntegration;
 using AuraUpBack.Application.Commands.RunExplorationRequest;
 using AuraUpBack.Application.Commands.StartInstagramManualLogin;
 using AuraUpBack.Application.Commands.SubmitApplicationForm;
+using AuraUpBack.Application.Commands.TranscribeExternalReel;
 using AuraUpBack.Application.Commands.TranscribeTrackedPost;
 using AuraUpBack.Application.Commands.UpdateTrackedAccountMonitoring;
 using AuraUpBack.Application.Commands.VerifyInstagramIntegrationCode;
+using AuraUpBack.Application.Queries.AnalyzeExternalReelAccount;
 using AuraUpBack.Application.Queries.GetInstagramIntegrationStatus;
 using AuraUpBack.Application.Queries.GetInstagramExplorerAccountPreview;
 using AuraUpBack.Application.Queries.GetTrackedAccountAnalysis;
@@ -45,6 +47,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ICommandHandler<VerifyInstagramIntegrationCodeCommand, Contracts.InstagramIntegrationDto>, VerifyInstagramIntegrationCodeCommandHandler>();
         services.AddSingleton<ICommandHandler<CreateExplorationRequestCommand, Contracts.ExplorationRequestDto>, CreateExplorationRequestCommandHandler>();
         services.AddSingleton<ICommandHandler<RunExplorationRequestCommand, Contracts.ExplorationRequestDto>, RunExplorationRequestCommandHandler>();
+        services.AddSingleton<ICommandHandler<TranscribeExternalReelCommand, Contracts.ExternalReelTranscriptionDto>, TranscribeExternalReelCommandHandler>();
         services.AddSingleton<ICommandHandler<TranscribeTrackedPostCommand, Contracts.TranscriptionResultDto>, TranscribeTrackedPostCommandHandler>();
         services.AddSingleton<ICommandHandler<UpdateTrackedAccountMonitoringCommand, Contracts.TrackedAccountOverviewDto>, UpdateTrackedAccountMonitoringCommandHandler>();
         services.AddSingleton<IQueryHandler<GetInstagramIntegrationStatusQuery, Contracts.InstagramIntegrationDto>, GetInstagramIntegrationStatusQueryHandler>();
@@ -53,6 +56,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IQueryHandler<GetTrackedAccountClientAnalyticsQuery, Contracts.TrackedAccountClientAnalyticsDto>, GetTrackedAccountClientAnalyticsQueryHandler>();
         services.AddSingleton<IQueryHandler<GetTrackedAccountOverviewQuery, Contracts.TrackedAccountOverviewDto>, GetTrackedAccountOverviewQueryHandler>();
         services.AddSingleton<IQueryHandler<GetWatchlistDashboardQuery, Contracts.WatchlistDashboardDto>, GetWatchlistDashboardQueryHandler>();
+        services.AddSingleton<IQueryHandler<AnalyzeExternalReelAccountQuery, Contracts.ExplorerAccountSnapshotDto>, AnalyzeExternalReelAccountQueryHandler>();
         services.AddSingleton<IQueryHandler<SearchInstagramExplorerQuery, Contracts.ExplorerSearchResultDto>, SearchInstagramExplorerQueryHandler>();
 
         return services;
