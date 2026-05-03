@@ -118,8 +118,9 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             {
                 logger.LogWarning(
                     exception,
-                    "ClipTranscribe failed for {VideoUrl}. Falling back to Instagram transcript extraction.",
-                    videoUrl);
+                    "ClipTranscribe failed for {VideoUrl}. Reason: {FailureReason}. Falling back to Instagram transcript extraction.",
+                    videoUrl,
+                    exception.Message);
 
                 return await BuildFallbackTranscriptAsync(context, videoUrl, caption, cancellationToken);
             }
@@ -1971,11 +1972,22 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         var instagramFallback = await TryExtractTranscriptFromInstagramAsync(context, videoUrl, cancellationToken);
         if (!string.IsNullOrWhiteSpace(instagramFallback))
         {
+            logger.LogInformation(
+                "Using Instagram page fallback transcript for {VideoUrl}. TranscriptLength: {TranscriptLength}.",
+                videoUrl,
+                instagramFallback.Length);
+
             return new VideoTranscriptionResult(instagramFallback, string.Empty, string.Empty);
         }
 
+        var fallbackTranscript = BuildFallbackTranscript(videoUrl, caption);
+        logger.LogInformation(
+            "Using caption/default fallback transcript for {VideoUrl}. TranscriptLength: {TranscriptLength}.",
+            videoUrl,
+            fallbackTranscript.Length);
+
         return new VideoTranscriptionResult(
-            BuildFallbackTranscript(videoUrl, caption),
+            fallbackTranscript,
             string.Empty,
             string.Empty);
     }
