@@ -26,3 +26,7 @@ public sealed record ExplorerSearchResultDto(
     int ReturnedCount,
     bool HasMore,
     IReadOnlyCollection<ExplorerReelDto> Reels);
+
+public sealed record ExplorerAccountSnapshotDto(
+    ExplorerAccountPreviewDto Account,
+    IReadOnlyCollection<ExplorerReelDto> Reels);

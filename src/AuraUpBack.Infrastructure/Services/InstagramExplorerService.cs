@@ -137,6 +137,68 @@ internal sealed partial class InstagramExplorerService(
         }
     }
 
+    public async Task<ExplorerReel?> GetReelAsync(string? reelUrl, CancellationToken cancellationToken)
+    {
+        var normalizedUrl = NormalizeInstagramReelUrl(reelUrl);
+        var cacheKey = $"explorer-reel:{normalizedUrl}";
+        if (memoryCache.TryGetValue<ExplorerReel>(cacheKey, out var cachedReel) &&
+            cachedReel is not null)
+        {
+            return cachedReel;
+        }
+
+        var reel = await WithExplorerContextAsync(
+            async context => await ReadReelAsync(context, normalizedUrl, cancellationToken),
+            cancellationToken);
+
+        if (reel is not null)
+        {
+            memoryCache.Set(
+                cacheKey,
+                reel,
+                TimeSpan.FromMinutes(Math.Max(1, _options.ExplorerPreviewCacheMinutes)));
+        }
+
+        return reel;
+    }
+
+    public async Task<ExplorerAccountSnapshot> GetAccountSnapshotAsync(
+        string handle,
+        int reelCount,
+        CancellationToken cancellationToken)
+    {
+        var normalizedHandle = handle.Trim().TrimStart('@').ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalizedHandle))
+        {
+            throw new InvalidOperationException("The account handle is required.");
+        }
+
+        var normalizedReelCount = Math.Clamp(reelCount, 1, 12);
+        var cacheKey = $"explorer-account-snapshot:{normalizedHandle}:{normalizedReelCount}";
+        if (memoryCache.TryGetValue<ExplorerAccountSnapshot>(cacheKey, out var cachedSnapshot) &&
+            cachedSnapshot is not null)
+        {
+            return cachedSnapshot;
+        }
+
+        var preview = await GetAccountPreviewAsync(normalizedHandle, cancellationToken);
+        var reels = await WithExplorerContextAsync(
+            async context => await ReadRecentAccountReelsAsync(
+                context,
+                normalizedHandle,
+                preview,
+                normalizedReelCount,
+                cancellationToken),
+            cancellationToken);
+
+        var snapshot = new ExplorerAccountSnapshot(preview, reels);
+        memoryCache.Set(
+            cacheKey,
+            snapshot,
+            TimeSpan.FromMinutes(Math.Max(1, _options.ExplorerPreviewCacheMinutes)));
+        return snapshot;
+    }
+
     private async Task<ExplorerSessionContext> ResolveExplorerSessionAsync(CancellationToken cancellationToken)
     {
         var state = await instagramConnectionAutomation.GetStatusAsync(cancellationToken);
@@ -157,6 +219,76 @@ internal sealed partial class InstagramExplorerService(
             StorageStatePath = session.HasSession ? session.SessionStatePath : null,
             ViewportSize = new ViewportSize { Width = 1440, Height = 980 }
         });
+    }
+
+    private async Task<T> WithExplorerContextAsync<T>(
+        Func<IBrowserContext, Task<T>> action,
+        CancellationToken cancellationToken)
+    {
+        await _searchSlots.WaitAsync(cancellationToken);
+
+        try
+        {
+            var session = await ResolveExplorerSessionAsync(cancellationToken);
+            var usePersistentProfile = session.HasSession;
+            InstagramBrowserProfileService.PersistentBrowserLease? persistentLease = null;
+            IPlaywright? playwright = null;
+            IBrowser? browser = null;
+            IBrowserContext? context = null;
+
+            try
+            {
+                if (usePersistentProfile)
+                {
+                    persistentLease = await browserProfileService.AcquireAsync(_options.RpaHeadless, cancellationToken);
+                    context = persistentLease.Context;
+                    await InstagramBrowserProfileService.ExportSessionStateAsync(context, session.SessionStatePath);
+                }
+                else
+                {
+                    playwright = await Playwright.CreateAsync();
+                    browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+                    {
+                        Headless = _options.RpaHeadless,
+                        ChromiumSandbox = false,
+                        Args =
+                        [
+                            "--no-sandbox",
+                            "--disable-setuid-sandbox",
+                            "--disable-gpu",
+                            "--disable-dev-shm-usage"
+                        ]
+                    });
+
+                    context = await CreateContextAsync(browser, session);
+                }
+
+                return await action(context);
+            }
+            finally
+            {
+                if (persistentLease is not null)
+                {
+                    await persistentLease.DisposeAsync();
+                }
+
+                if (context is not null && !usePersistentProfile)
+                {
+                    await context.CloseAsync();
+                }
+
+                if (browser is not null)
+                {
+                    await browser.CloseAsync();
+                }
+
+                playwright?.Dispose();
+            }
+        }
+        finally
+        {
+            _searchSlots.Release();
+        }
     }
 
     private static async Task<IReadOnlyCollection<string>> ReadVisibleReelLinksAsync(IPage page)
@@ -240,6 +372,84 @@ internal sealed partial class InstagramExplorerService(
                     string.Empty,
                     string.Empty,
                     0));
+        }
+        finally
+        {
+            await page.CloseAsync();
+        }
+    }
+
+    private async Task<IReadOnlyCollection<ExplorerReel>> ReadRecentAccountReelsAsync(
+        IBrowserContext context,
+        string handle,
+        ExplorerAccountPreview preview,
+        int count,
+        CancellationToken cancellationToken)
+    {
+        var page = await context.NewPageAsync();
+
+        try
+        {
+            var profileUrl = $"https://www.instagram.com/{handle}/";
+            await page.GotoAsync(profileUrl, new PageGotoOptions
+            {
+                WaitUntil = WaitUntilState.DOMContentLoaded,
+                Timeout = Math.Max(5, _options.ExplorerNavigationTimeoutSeconds) * 1_000
+            });
+
+            await page.WaitForTimeoutAsync(900);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var discoveredUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var attempt = 0; attempt < 3 && discoveredUrls.Count < count * 2; attempt++)
+            {
+                foreach (var url in await ReadVisibleReelLinksAsync(page))
+                {
+                    discoveredUrls.Add(url);
+                }
+
+                if (discoveredUrls.Count >= count * 2)
+                {
+                    break;
+                }
+
+                await page.EvaluateAsync("() => window.scrollTo(0, document.body.scrollHeight)");
+                await page.Mouse.WheelAsync(0, 1800);
+                await page.WaitForTimeoutAsync(500);
+            }
+
+            var reels = new List<ExplorerReel>();
+            foreach (var url in discoveredUrls.Take(Math.Max(count * 2, count)))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var reel = await ReadReelAsync(context, url, cancellationToken);
+                    if (reel is not null)
+                    {
+                        var account = string.IsNullOrWhiteSpace(reel.Account.ProfileImageUrl) && !string.IsNullOrWhiteSpace(preview.ProfileImageUrl)
+                            ? preview
+                            : reel.Account;
+                        reels.Add(reel with { Account = account });
+                    }
+                }
+                catch (Exception exception)
+                {
+                    logger.LogWarning(exception, "Explorer could not read recent reel {Url} for @{Handle}.", url, handle);
+                }
+
+                if (reels.Count >= count)
+                {
+                    break;
+                }
+            }
+
+            return reels
+                .OrderByDescending(x => x.PublishedAtUtc)
+                .ThenByDescending(x => x.Views)
+                .Take(count)
+                .ToList();
         }
         finally
         {
@@ -543,6 +753,29 @@ internal sealed partial class InstagramExplorerService(
     {
         var match = Regex.Match(url ?? string.Empty, @"/(?:reel|tv|p)/(?<id>[^/?#]+)/?", RegexOptions.IgnoreCase);
         return match.Success ? match.Groups["id"].Value : Guid.NewGuid().ToString("N");
+    }
+
+    private static string NormalizeInstagramReelUrl(string? reelUrl)
+    {
+        var normalized = reelUrl?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            throw new InvalidOperationException("The reel URL is required.");
+        }
+
+        if (!Uri.TryCreate(normalized, UriKind.Absolute, out var uri) ||
+            !uri.Host.Contains("instagram.com", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Paste a valid Instagram reel URL.");
+        }
+
+        if (!uri.AbsolutePath.Contains("/reel/", StringComparison.OrdinalIgnoreCase) &&
+            !uri.AbsolutePath.Contains("/reels/", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The URL must point to an Instagram reel.");
+        }
+
+        return uri.GetLeftPart(UriPartial.Path).TrimEnd('/') + "/";
     }
 
     private static DateTime? TryParsePublishedAt(string value)
