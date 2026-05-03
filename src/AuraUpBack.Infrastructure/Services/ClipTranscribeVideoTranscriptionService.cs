@@ -545,7 +545,15 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         logger.LogInformation("ClipTranscribe login started for account {Account}.", account);
 
         await OpenLoginPageAsync(page);
-        await DismissDecorativeUiAsync(page);
+
+        if (await HasSignedInSignalAsync(page))
+        {
+            await SaveSessionStateAsync(context, sessionStatePath, "existing authenticated session");
+            logger.LogInformation(
+                "ClipTranscribe session was already authenticated for account {Account}.",
+                account);
+            return;
+        }
 
         var emailInput = await ResolveEmailInputAsync(page);
         var passwordInput = await ResolvePasswordInputAsync(page);
@@ -609,72 +617,112 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             Timeout = Math.Max(15, _options.ClipTranscribeLoginTimeoutSeconds) * 1000
         });
 
+        await WaitForClipTranscribeAppReadyAsync(page);
         await DismissDecorativeUiAsync(page);
 
-        if (await TryClickLoginEntryAsync(page) && await HasVisibleLoginInputAsync(page))
+        if (await HasVisibleLoginInputAsync(page) ||
+            await HasSignedInSignalAsync(page) ||
+            await TryOpenLoginDialogAsync(page))
         {
             return;
         }
 
-        foreach (var path in new[] { "sign-in", "login", "auth/sign-in", "auth/login" })
+        var diagnosticState = await ReadDiagnosticStateAsync(page);
+
+        throw new InvalidOperationException(
+            $"ClipTranscribe login modal did not show an email or password input. CurrentUrl: {diagnosticState.CurrentUrl}. Title: {diagnosticState.Title}. Body: {diagnosticState.BodySnippet}");
+    }
+
+    private static async Task WaitForClipTranscribeAppReadyAsync(IPage page)
+    {
+        try
         {
-            var loginUrl = BuildUrl(path);
-            logger.LogInformation("Opening ClipTranscribe login page at {LoginUrl}.", loginUrl);
-
-            await page.GotoAsync(loginUrl, new PageGotoOptions
+            await page.WaitForLoadStateAsync(LoadState.NetworkIdle, new PageWaitForLoadStateOptions
             {
-                WaitUntil = WaitUntilState.DOMContentLoaded,
-                Timeout = Math.Max(15, _options.ClipTranscribeLoginTimeoutSeconds) * 1000
+                Timeout = 5_000
             });
+        }
+        catch (PlaywrightException)
+        {
+        }
 
-            await page.WaitForTimeoutAsync(750);
-            await DismissDecorativeUiAsync(page);
+        try
+        {
+            await page.Locator("button:has-text('Sign In'), input[type='url'], input[type='email']").First
+                .WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 8_000
+                });
+        }
+        catch (PlaywrightException)
+        {
+        }
+    }
 
-            if (await HasVisibleLoginInputAsync(page) || await IsAuthenticationWallAsync(page))
+    private static async Task<bool> TryOpenLoginDialogAsync(IPage page)
+    {
+        foreach (var candidate in ResolveLoginEntryCandidates(page))
+        {
+            try
             {
-                return;
+                await candidate.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 2_500
+                });
+
+                await candidate.ClickAsync(new LocatorClickOptions
+                {
+                    Force = true
+                });
+
+                if (await WaitForLoginDialogOrAuthenticatedSessionAsync(page))
+                {
+                    return true;
+                }
+            }
+            catch (TimeoutException)
+            {
+            }
+            catch (PlaywrightException)
+            {
             }
         }
 
-        throw new InvalidOperationException("ClipTranscribe login page did not show an email or password input.");
+        return false;
     }
 
-    private static async Task<bool> TryClickLoginEntryAsync(IPage page)
+    private static IReadOnlyList<ILocator> ResolveLoginEntryCandidates(IPage page)
     {
-        foreach (var label in new[] { "Sign In", "Log In", "Login", "Iniciar sesión", "Acceder" })
+        return
+        [
+            page.Locator("button:has-text('Sign In')").First,
+            page.Locator("button:has-text('Log In')").First,
+            page.Locator("button:has-text('Login')").First,
+            page.Locator("a:has-text('Sign In')").First,
+            page.Locator("a:has-text('Log In')").First,
+            page.Locator("[role='button']:has-text('Sign In')").First,
+            page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Sign In" }).First,
+            page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Log In" }).First,
+            page.GetByRole(AriaRole.Link, new PageGetByRoleOptions { Name = "Sign In" }).First,
+            page.GetByText("Iniciar sesión", new PageGetByTextOptions { Exact = true }).First,
+            page.GetByText("Acceder", new PageGetByTextOptions { Exact = true }).First
+        ];
+    }
+
+    private static async Task<bool> WaitForLoginDialogOrAuthenticatedSessionAsync(IPage page)
+    {
+        var deadlineUtc = DateTime.UtcNow.AddSeconds(8);
+
+        while (DateTime.UtcNow < deadlineUtc)
         {
-            var candidates = new[]
+            if (await HasVisibleLoginInputAsync(page) || await HasSignedInSignalAsync(page))
             {
-                page.GetByRole(AriaRole.Link, new PageGetByRoleOptions { Name = label }).First,
-                page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = label }).First,
-                page.GetByText(label, new PageGetByTextOptions { Exact = true }).First
-            };
-
-            foreach (var candidate in candidates)
-            {
-                try
-                {
-                    await candidate.WaitForAsync(new LocatorWaitForOptions
-                    {
-                        State = WaitForSelectorState.Visible,
-                        Timeout = 1_500
-                    });
-
-                    await candidate.ClickAsync(new LocatorClickOptions
-                    {
-                        Force = true
-                    });
-
-                    await page.WaitForTimeoutAsync(1_000);
-                    return true;
-                }
-                catch (TimeoutException)
-                {
-                }
-                catch (PlaywrightException)
-                {
-                }
+                return true;
             }
+
+            await page.WaitForTimeoutAsync(250);
         }
 
         return false;
