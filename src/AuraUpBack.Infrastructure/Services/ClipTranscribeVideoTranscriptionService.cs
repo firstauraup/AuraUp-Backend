@@ -67,12 +67,18 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         var page = await context.NewPageAsync();
         page.SetDefaultTimeout(Math.Max(15, _options.RequestTimeoutSeconds) * 1000);
 
-        await NavigateToTranscriptToolAsync(page);
+        if (!await TryNavigateToTranscriptToolAsync(page, videoUrl))
+        {
+            return await BuildFallbackTranscriptAsync(context, videoUrl, caption, cancellationToken);
+        }
 
         if (!hasSessionState && hasLoginCredentials)
         {
-            await LoginAsync(page, context, sessionStatePath, cancellationToken);
-            await NavigateToTranscriptToolAsync(page);
+            if (!await TryLoginAsync(page, context, sessionStatePath, videoUrl, cancellationToken) ||
+                !await TryNavigateToTranscriptToolAsync(page, videoUrl))
+            {
+                return await BuildFallbackTranscriptAsync(context, videoUrl, caption, cancellationToken);
+            }
         }
 
         var retriedAfterLogin = false;
@@ -91,8 +97,12 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     "ClipTranscribe requested authentication for {VideoUrl}. Retrying after login.",
                     videoUrl);
 
-                await LoginAsync(page, context, sessionStatePath, cancellationToken);
-                await NavigateToTranscriptToolAsync(page);
+                if (!await TryLoginAsync(page, context, sessionStatePath, videoUrl, cancellationToken) ||
+                    !await TryNavigateToTranscriptToolAsync(page, videoUrl))
+                {
+                    return await BuildFallbackTranscriptAsync(context, videoUrl, caption, cancellationToken);
+                }
+
                 continue;
             }
             catch (ClipTranscribeAuthenticationRequiredException exception)
@@ -118,6 +128,15 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 logger.LogWarning(
                     exception,
                     "ClipTranscribe timed out for {VideoUrl}. Falling back to Instagram transcript extraction.",
+                    videoUrl);
+
+                return await BuildFallbackTranscriptAsync(context, videoUrl, caption, cancellationToken);
+            }
+            catch (Exception exception) when (IsRecoverableBrowserAutomationException(exception))
+            {
+                logger.LogWarning(
+                    exception,
+                    "ClipTranscribe browser automation failed for {VideoUrl}. Falling back to Instagram transcript extraction.",
                     videoUrl);
 
                 return await BuildFallbackTranscriptAsync(context, videoUrl, caption, cancellationToken);
@@ -275,6 +294,23 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         });
 
         await DismissDecorativeUiAsync(page);
+    }
+
+    private async Task<bool> TryNavigateToTranscriptToolAsync(IPage page, string videoUrl)
+    {
+        try
+        {
+            await NavigateToTranscriptToolAsync(page);
+            return true;
+        }
+        catch (Exception exception) when (IsRecoverableBrowserAutomationException(exception))
+        {
+            logger.LogWarning(
+                exception,
+                "ClipTranscribe could not open the transcript tool for {VideoUrl}. Falling back to Instagram transcript extraction.",
+                videoUrl);
+            return false;
+        }
     }
 
     private async Task<VideoTranscriptionResult> SubmitTranscriptionAsync(IPage page, string videoUrl, CancellationToken cancellationToken)
@@ -489,6 +525,36 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             sessionStatePath);
     }
 
+    private async Task<bool> TryLoginAsync(
+        IPage page,
+        IBrowserContext context,
+        string sessionStatePath,
+        string videoUrl,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await LoginAsync(page, context, sessionStatePath, cancellationToken);
+            return true;
+        }
+        catch (InvalidOperationException exception)
+        {
+            logger.LogWarning(
+                exception,
+                "ClipTranscribe login failed for {VideoUrl}. Falling back to Instagram transcript extraction.",
+                videoUrl);
+            return false;
+        }
+        catch (Exception exception) when (IsRecoverableBrowserAutomationException(exception))
+        {
+            logger.LogWarning(
+                exception,
+                "ClipTranscribe login automation failed for {VideoUrl}. Falling back to Instagram transcript extraction.",
+                videoUrl);
+            return false;
+        }
+    }
+
     private async Task OpenLoginPageAsync(IPage page)
     {
         await page.GotoAsync(BuildBaseUrl(), new PageGotoOptions
@@ -556,6 +622,9 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     await page.WaitForTimeoutAsync(1_000);
                     return true;
                 }
+                catch (TimeoutException)
+                {
+                }
                 catch (PlaywrightException)
                 {
                 }
@@ -589,6 +658,9 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 
                 return locator;
             }
+            catch (TimeoutException)
+            {
+            }
             catch (PlaywrightException)
             {
             }
@@ -618,6 +690,9 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 });
 
                 return locator;
+            }
+            catch (TimeoutException)
+            {
             }
             catch (PlaywrightException)
             {
@@ -658,6 +733,9 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                     Force = true
                 });
                 return;
+            }
+            catch (TimeoutException)
+            {
             }
             catch (PlaywrightException)
             {
@@ -794,6 +872,11 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         {
             return false;
         }
+    }
+
+    private static bool IsRecoverableBrowserAutomationException(Exception exception)
+    {
+        return exception is TimeoutException or PlaywrightException;
     }
 
     private async Task SaveSessionStateAsync(IBrowserContext context, string sessionStatePath, string source)
@@ -1946,6 +2029,11 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 
             logger.LogInformation("Instagram fallback transcript extracted for {VideoUrl}", videoUrl);
             return extracted;
+        }
+        catch (TimeoutException exception)
+        {
+            logger.LogWarning(exception, "Instagram fallback transcript extraction timed out for {VideoUrl}", videoUrl);
+            return null;
         }
         catch (PlaywrightException exception)
         {
