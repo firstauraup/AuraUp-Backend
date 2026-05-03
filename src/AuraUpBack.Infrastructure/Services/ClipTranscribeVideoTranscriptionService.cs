@@ -85,6 +85,7 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         var clipTranscribeVideoUrls = BuildClipTranscribeVideoUrlVariants(videoUrl);
         var clipTranscribeVideoUrlIndex = 0;
         var retriedAfterLogin = false;
+        var retriedAfterFreshCredentialLogin = false;
         while (true)
         {
             VideoTranscriptionResult transcription;
@@ -115,6 +116,28 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             }
             catch (ClipTranscribeProviderException exception)
             {
+                if (hasSessionState && hasLoginCredentials && !retriedAfterFreshCredentialLogin)
+                {
+                    retriedAfterFreshCredentialLogin = true;
+                    logger.LogWarning(
+                        exception,
+                        "ClipTranscribe rejected {VideoUrl} while using stored session. Forcing fresh credential login and retrying before fallback.",
+                        exception.VideoUrl);
+
+                    var freshLoginTranscription = await TryTranscribeWithFreshLoginAsync(
+                        browser,
+                        sessionStatePath,
+                        clipTranscribeVideoUrls,
+                        videoUrl,
+                        timeoutToken,
+                        cancellationToken);
+
+                    if (freshLoginTranscription is not null)
+                    {
+                        return freshLoginTranscription;
+                    }
+                }
+
                 logger.LogWarning(
                     exception,
                     "ClipTranscribe rejected {VideoUrl}. Reason: {FailureReason}. Falling back to Instagram transcript extraction.",
@@ -298,6 +321,80 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         var context = await browser.NewContextAsync(contextOptions);
         await GrantClipboardPermissionsAsync(context);
         return context;
+    }
+
+    private async Task<VideoTranscriptionResult?> TryTranscribeWithFreshLoginAsync(
+        IBrowser browser,
+        string sessionStatePath,
+        IReadOnlyList<string> videoUrlVariants,
+        string originalVideoUrl,
+        CancellationToken timeoutToken,
+        CancellationToken cancellationToken)
+    {
+        await using var freshContext = await CreateContextAsync(browser, hasSessionState: false, sessionStatePath);
+        var freshPage = await freshContext.NewPageAsync();
+        freshPage.SetDefaultTimeout(Math.Max(15, _options.RequestTimeoutSeconds) * 1000);
+
+        if (!await TryLoginAsync(freshPage, freshContext, sessionStatePath, originalVideoUrl, cancellationToken))
+        {
+            return null;
+        }
+
+        for (var index = 0; index < videoUrlVariants.Count; index++)
+        {
+            var videoUrl = videoUrlVariants[index];
+            try
+            {
+                if (!await TryNavigateToTranscriptToolAsync(freshPage, videoUrl))
+                {
+                    return null;
+                }
+
+                return await SubmitTranscriptionAsync(freshPage, videoUrl, timeoutToken);
+            }
+            catch (ClipTranscribeProviderException exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "ClipTranscribe rejected {VideoUrl} after fresh credential login. VariantIndex: {VariantIndex}.",
+                    exception.VideoUrl,
+                    index + 1);
+            }
+            catch (ClipTranscribeAuthenticationRequiredException exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "ClipTranscribe still requested authentication after fresh credential login for {VideoUrl}.",
+                    videoUrl);
+                return null;
+            }
+            catch (InvalidOperationException exception)
+            {
+                logger.LogWarning(
+                    exception,
+                    "ClipTranscribe failed after fresh credential login for {VideoUrl}.",
+                    videoUrl);
+                return null;
+            }
+            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    exception,
+                    "ClipTranscribe timed out after fresh credential login for {VideoUrl}.",
+                    videoUrl);
+                return null;
+            }
+            catch (Exception exception) when (IsRecoverableBrowserAutomationException(exception))
+            {
+                logger.LogWarning(
+                    exception,
+                    "ClipTranscribe browser automation failed after fresh credential login for {VideoUrl}.",
+                    videoUrl);
+                return null;
+            }
+        }
+
+        return null;
     }
 
     private async Task GrantClipboardPermissionsAsync(IBrowserContext context)
@@ -2118,7 +2215,8 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
                 videoUrl,
                 instagramFallback.Length);
 
-            return new VideoTranscriptionResult(instagramFallback, string.Empty, string.Empty);
+            var fallbackScript = BuildFallbackGeneratedScript(instagramFallback);
+            return new VideoTranscriptionResult(instagramFallback, fallbackScript.Hook, fallbackScript.Script);
         }
 
         var fallbackTranscript = BuildFallbackTranscript(videoUrl, caption);
@@ -2127,10 +2225,11 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             videoUrl,
             fallbackTranscript.Length);
 
+        var generatedFallback = BuildFallbackGeneratedScript(fallbackTranscript);
         return new VideoTranscriptionResult(
             fallbackTranscript,
-            string.Empty,
-            string.Empty);
+            generatedFallback.Hook,
+            generatedFallback.Script);
     }
 
     private async Task<string?> TryExtractTranscriptFromInstagramAsync(
@@ -2305,6 +2404,38 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
         }
 
         return "Transcripción no disponible desde proveedor externo.";
+    }
+
+    private static ClipTranscribeGeneratedScript BuildFallbackGeneratedScript(string transcript)
+    {
+        var normalized = NormalizeGeneratedSection(transcript);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return ClipTranscribeGeneratedScript.Empty;
+        }
+
+        return new ClipTranscribeGeneratedScript(
+            BuildFallbackHook(normalized),
+            normalized);
+    }
+
+    private static string BuildFallbackHook(string transcript)
+    {
+        var withoutHashtags = Regex.Replace(
+            transcript,
+            @"(?:^|\s)#\S+",
+            string.Empty,
+            RegexOptions.Multiline).Trim();
+
+        var firstSentence = Regex.Match(withoutHashtags, @"^(.{40,260}?[.!?])(?:\s|$)", RegexOptions.Singleline);
+        var hook = firstSentence.Success
+            ? firstSentence.Groups[1].Value
+            : withoutHashtags.Length <= 220
+                ? withoutHashtags
+                : withoutHashtags[..220];
+
+        hook = Regex.Replace(hook, @"\s+", " ").Trim();
+        return hook.Trim(' ', '-', '|', ':', '.', ',', '"', '\'', '“', '”', '‘', '’', '✨');
     }
 
     private sealed record InstagramFallbackPayload(
