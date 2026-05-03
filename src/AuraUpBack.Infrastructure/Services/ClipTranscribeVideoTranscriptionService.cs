@@ -1777,6 +1777,11 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
 
         normalized = Regex.Replace(
             normalized,
+            @"(?m)^\s*\[(?:\d{1,2}:)?\d{1,2}:\d{2}\]\s*",
+            string.Empty);
+
+        normalized = Regex.Replace(
+            normalized,
             @"\s*(Analyze Comments|Create My Version).*$",
             string.Empty,
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
