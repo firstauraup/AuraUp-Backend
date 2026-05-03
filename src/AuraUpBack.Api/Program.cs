@@ -33,6 +33,7 @@ using AuraUpBack.Infrastructure.Options;
 using AuraUpBack.Infrastructure.Services;
 using AuraUpBack.Domain.Entities;
 using AuraUpBack.Domain.Enums;
+using AuraUpBack.Domain.Exceptions;
 using AuraUpBack.Domain.Repositories;
 using AuraUpBack.Domain.Services;
 using Microsoft.AspNetCore.SignalR;
@@ -1093,8 +1094,19 @@ app.MapPost("/api/reel-workbench/transcribe", async (
         return AuthorizationExtensions.ForbidAction("Clients cannot use reel workbench.");
     }
 
-    var result = await dispatcher.SendAsync(new TranscribeExternalReelCommand(request.ReelUrl), cancellationToken);
-    return Results.Ok(result);
+    try
+    {
+        var result = await dispatcher.SendAsync(new TranscribeExternalReelCommand(request.ReelUrl), cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (InstagramRateLimitException exception)
+    {
+        return ReelWorkbenchProblem(exception.Message, StatusCodes.Status429TooManyRequests);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return ReelWorkbenchProblem(exception.Message, StatusCodes.Status400BadRequest);
+    }
 });
 
 app.MapPost("/api/reel-workbench/analyze-account", async (
@@ -1108,8 +1120,19 @@ app.MapPost("/api/reel-workbench/analyze-account", async (
         return AuthorizationExtensions.ForbidAction("Clients cannot use reel workbench.");
     }
 
-    var result = await dispatcher.QueryAsync(new AnalyzeExternalReelAccountQuery(request.ReelUrl), cancellationToken);
-    return Results.Ok(result);
+    try
+    {
+        var result = await dispatcher.QueryAsync(new AnalyzeExternalReelAccountQuery(request.ReelUrl), cancellationToken);
+        return Results.Ok(result);
+    }
+    catch (InstagramRateLimitException exception)
+    {
+        return ReelWorkbenchProblem(exception.Message, StatusCodes.Status429TooManyRequests);
+    }
+    catch (InvalidOperationException exception)
+    {
+        return ReelWorkbenchProblem(exception.Message, StatusCodes.Status400BadRequest);
+    }
 });
 
 app.MapPost("/api/explorations", async (
@@ -1447,6 +1470,17 @@ static async Task<AuraUpBack.Application.Contracts.TrackedAccountOverviewDto> To
         overview.LastResearchSummary,
         overview.LastInspectedAtUtc,
         posts);
+}
+
+static IResult ReelWorkbenchProblem(string message, int statusCode)
+{
+    return Results.Json(new
+    {
+        error = statusCode == StatusCodes.Status429TooManyRequests
+            ? "InstagramRateLimited"
+            : "ReelWorkbenchError",
+        message
+    }, statusCode: statusCode);
 }
 
 static async Task WriteSseEventAsync(HttpContext httpContext, object payload, CancellationToken cancellationToken)

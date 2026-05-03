@@ -33,6 +33,6 @@ public sealed class InstagramIntegrationOptions
     public int ExplorerSearchCacheMinutes { get; set; } = 10;
     public int ExplorerPreviewCacheMinutes { get; set; } = 15;
     public int ExplorerMaxConcurrentSearches { get; set; } = 2;
-    public int ExplorerMaxConcurrentReelLoads { get; set; } = 4;
+    public int ExplorerMaxConcurrentReelLoads { get; set; } = 1;
     public int ExplorerNavigationTimeoutSeconds { get; set; } = 20;
 }

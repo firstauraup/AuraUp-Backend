@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Collections.Concurrent;
 using AuraUpBack.Domain.Enums;
+using AuraUpBack.Domain.Exceptions;
 using AuraUpBack.Domain.Models;
 using AuraUpBack.Domain.Services;
 using AuraUpBack.Infrastructure.Options;
@@ -312,14 +313,16 @@ internal sealed partial class InstagramExplorerService(
 
         try
         {
-            await page.GotoAsync(reelUrl, new PageGotoOptions
+            var response = await page.GotoAsync(reelUrl, new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.DOMContentLoaded,
                 Timeout = Math.Max(5, _options.ExplorerNavigationTimeoutSeconds) * 1_000
             });
+            ThrowIfInstagramRateLimited(response, reelUrl, "read reel");
 
             await page.WaitForTimeoutAsync(750);
             cancellationToken.ThrowIfCancellationRequested();
+            await ThrowIfInstagramRateLimitedPageAsync(page, reelUrl, "read reel");
 
             var snapshot = await page.EvaluateAsync<ExplorerSnapshot>(
                 """
@@ -391,14 +394,16 @@ internal sealed partial class InstagramExplorerService(
         try
         {
             var profileUrl = $"https://www.instagram.com/{handle}/";
-            await page.GotoAsync(profileUrl, new PageGotoOptions
+            var response = await page.GotoAsync(profileUrl, new PageGotoOptions
             {
                 WaitUntil = WaitUntilState.DOMContentLoaded,
                 Timeout = Math.Max(5, _options.ExplorerNavigationTimeoutSeconds) * 1_000
             });
+            ThrowIfInstagramRateLimited(response, profileUrl, "read profile reels");
 
             await page.WaitForTimeoutAsync(900);
             cancellationToken.ThrowIfCancellationRequested();
+            await ThrowIfInstagramRateLimitedPageAsync(page, profileUrl, "read profile reels");
 
             var discoveredUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (var attempt = 0; attempt < 3 && discoveredUrls.Count < count * 2; attempt++)
@@ -562,13 +567,15 @@ internal sealed partial class InstagramExplorerService(
                 pageInstance = await context.NewPageAsync();
                 var searchUrl = $"https://www.instagram.com/explore/search/keyword/?q={Uri.EscapeDataString(query)}";
 
-                await pageInstance.GotoAsync(searchUrl, new PageGotoOptions
+                var response = await pageInstance.GotoAsync(searchUrl, new PageGotoOptions
                 {
                     WaitUntil = WaitUntilState.DOMContentLoaded,
                     Timeout = Math.Max(5, _options.ExplorerNavigationTimeoutSeconds) * 1_000
                 });
+                ThrowIfInstagramRateLimited(response, searchUrl, "search reels");
 
                 await pageInstance.WaitForTimeoutAsync(1_250);
+                await ThrowIfInstagramRateLimitedPageAsync(pageInstance, searchUrl, "search reels");
 
                 var discoveredUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var maxCandidates = Math.Max(targetResults * 3, 80);
@@ -889,6 +896,12 @@ internal sealed partial class InstagramExplorerService(
 
         if (!response.IsSuccessStatusCode)
         {
+            if ((int)response.StatusCode == 429)
+            {
+                throw new InstagramRateLimitException(
+                    "Instagram is temporarily rate-limiting reel access. Wait a few minutes or refresh the Instagram session before trying again.");
+            }
+
             throw new InvalidOperationException($"Instagram account @{normalizedHandle} could not be read.");
         }
 
@@ -927,6 +940,38 @@ internal sealed partial class InstagramExplorerService(
         client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
         client.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
         return client;
+    }
+
+    private static void ThrowIfInstagramRateLimited(IResponse? response, string url, string action)
+    {
+        if (response?.Status != 429)
+        {
+            return;
+        }
+
+        throw new InstagramRateLimitException(
+            $"Instagram is temporarily rate-limiting reel access while trying to {action}. Wait a few minutes or refresh the Instagram session before trying again. Url: {url}");
+    }
+
+    private static async Task ThrowIfInstagramRateLimitedPageAsync(IPage page, string url, string action)
+    {
+        try
+        {
+            var pageText = await page.Locator("body").InnerTextAsync(new LocatorInnerTextOptions { Timeout = 1_000 });
+            if (pageText.Contains("HTTP ERROR 429", StringComparison.OrdinalIgnoreCase) ||
+                pageText.Contains("This page isn't working", StringComparison.OrdinalIgnoreCase) &&
+                pageText.Contains("429", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InstagramRateLimitException(
+                    $"Instagram is temporarily rate-limiting reel access while trying to {action}. Wait a few minutes or refresh the Instagram session before trying again. Url: {url}");
+            }
+        }
+        catch (TimeoutException)
+        {
+        }
+        catch (PlaywrightException)
+        {
+        }
     }
 
     [GeneratedRegex(@"(?<followers>[\d\.,]+[kKmM]?)\s+Followers", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
