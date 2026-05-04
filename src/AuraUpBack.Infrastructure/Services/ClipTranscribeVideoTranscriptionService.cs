@@ -964,15 +964,34 @@ internal sealed class ClipTranscribeVideoTranscriptionService(
             return await page.EvaluateAsync<bool>(
                 """
                 () => {
-                  const bodyText = (document.body?.innerText || '').toLowerCase();
-                  return bodyText.includes('sign out') ||
+                  const rawText = (document.body?.innerText || '').toLowerCase();
+                  const bodyText = rawText.replace(/\s+/g, ' ').trim();
+                  const hasLoginEntry =
+                    bodyText.includes('sign in') ||
+                    bodyText.includes('log in') ||
+                    bodyText.includes('login') ||
+                    bodyText.includes('iniciar sesión') ||
+                    bodyText.includes('acceder');
+
+                  if (bodyText.includes('sign out') ||
                     bodyText.includes('log out') ||
                     bodyText.includes('dashboard') ||
                     bodyText.includes('my account') ||
                     bodyText.includes('account settings') ||
                     bodyText.includes('pro history') ||
+                    bodyText.includes('history settings') ||
                     bodyText.includes('cerrar sesión') ||
-                    bodyText.includes('mi cuenta');
+                    bodyText.includes('mi cuenta')) {
+                    return true;
+                  }
+
+                  const links = Array.from(document.querySelectorAll('a, button, [role="button"]'))
+                    .map((element) => (element.textContent || '').toLowerCase().replace(/\s+/g, ' ').trim())
+                    .filter(Boolean);
+
+                  return !hasLoginEntry &&
+                    links.includes('history') &&
+                    links.includes('settings');
                 }
                 """);
         }
