@@ -29,10 +29,11 @@ internal sealed class DbAlertSignalRepository(IDbContextFactory<AuraUpBackDbCont
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await dbContext.AlertSignals
+            .AsNoTracking()
             .Where(x => x.AccountId == accountId && x.ExternalPostId == externalPostId)
+            .OrderByDescending(x => x.NotificationMultiplier)
             .Select(x => x.NotificationMultiplier)
-            .DefaultIfEmpty(0)
-            .MaxAsync(cancellationToken);
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     public async Task AddAsync(AlertSignal signal, CancellationToken cancellationToken)

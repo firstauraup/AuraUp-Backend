@@ -539,21 +539,13 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 {
                     foreach (var postLink in latestSnapshot.PostLinks ?? [])
                     {
-                        if (string.IsNullOrWhiteSpace(postLink))
-                        {
-                            continue;
-                        }
-
-                        discoveredLinks.Add(postLink);
+                        AddDiscoveredPostLink(discoveredLinks, postLink, maxPostsToCollect);
                     }
                 }
 
                 foreach (var postLink in await ReadVisiblePostLinksAsync(page))
                 {
-                    if (!string.IsNullOrWhiteSpace(postLink))
-                    {
-                        discoveredLinks.Add(postLink);
-                    }
+                    AddDiscoveredPostLink(discoveredLinks, postLink, maxPostsToCollect);
                 }
 
                 ReportProgress(
@@ -594,7 +586,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
             catch (PlaywrightException exception) when (!cancellationToken.IsCancellationRequested && IsPageCrashException(exception))
             {
                 logger.LogWarning(exception, "RPA page crashed extracting profile for @{Handle}. Recreating the page.", handle);
-                    ReportProgress(jobId, "Recovering profile", $"Chromium crashed while reading @{handle}", 0, discoveredLinks.Count, 0);
+                ReportProgress(jobId, "Recovering profile", $"Chromium crashed while reading @{handle}", 0, discoveredLinks.Count, 0);
 
                 var fallbackSnapshot = await TryReadProfileSnapshotViaHttpAsync(handle);
                 if (fallbackSnapshot is not null && fallbackSnapshot.PostLinks.Count > 0)
@@ -602,10 +594,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     latestSnapshot = fallbackSnapshot;
                     foreach (var postLink in fallbackSnapshot.PostLinks)
                     {
-                        if (!string.IsNullOrWhiteSpace(postLink))
-                        {
-                            discoveredLinks.Add(postLink);
-                        }
+                        AddDiscoveredPostLink(discoveredLinks, postLink, maxPostsToCollect);
                     }
 
                     ReportProgress(
@@ -809,14 +798,14 @@ internal sealed partial class RpaInstagramInspectionProvider(
         var urls = PostUrlRegex()
             .Matches(rawHtml)
             .Where(match => IsReelPostType(match.Groups["type"].Value))
-            .Select(match => $"https://www.instagram.com/{match.Groups["type"].Value}/{match.Groups["id"].Value}/")
+            .Select(match => $"https://www.instagram.com/{NormalizeInstagramPostType(match.Groups["type"].Value)}/{match.Groups["id"].Value}/")
             .ToList();
 
         urls.AddRange(
             EscapedPostUrlRegex()
                 .Matches(rawHtml)
                 .Where(match => IsReelPostType(match.Groups["type"].Value))
-                .Select(match => $"https://www.instagram.com/{match.Groups["type"].Value}/{match.Groups["id"].Value}/"));
+                .Select(match => $"https://www.instagram.com/{NormalizeInstagramPostType(match.Groups["type"].Value)}/{match.Groups["id"].Value}/"));
 
         return urls;
     }
@@ -1664,6 +1653,49 @@ internal sealed partial class RpaInstagramInspectionProvider(
         return segments.LastOrDefault() ?? $"{handle}-post-{index + 1:00}";
     }
 
+    private static void AddDiscoveredPostLink(HashSet<string> discoveredLinks, string? postLink, int maxPostsToCollect)
+    {
+        if (discoveredLinks.Count >= maxPostsToCollect)
+        {
+            return;
+        }
+
+        var normalizedPostUrl = NormalizeDiscoveredPostUrl(postLink);
+        if (normalizedPostUrl is null)
+        {
+            return;
+        }
+
+        discoveredLinks.Add(normalizedPostUrl);
+    }
+
+    private static string? NormalizeDiscoveredPostUrl(string? postUrl)
+    {
+        if (string.IsNullOrWhiteSpace(postUrl))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(postUrl, UriKind.Absolute, out var uri))
+        {
+            return null;
+        }
+
+        var match = PostUrlRegex().Match(uri.AbsolutePath);
+        if (!match.Success || !IsReelPostType(match.Groups["type"].Value))
+        {
+            return null;
+        }
+
+        var id = match.Groups["id"].Value;
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        return $"https://www.instagram.com/{NormalizeInstagramPostType(match.Groups["type"].Value)}/{id}/";
+    }
+
     private static bool IsInvalidRpaPlaceholder(
         string caption,
         long views,
@@ -1711,6 +1743,13 @@ internal sealed partial class RpaInstagramInspectionProvider(
                type.Equals("tv", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static string NormalizeInstagramPostType(string type)
+    {
+        return type.Equals("reel", StringComparison.OrdinalIgnoreCase)
+            ? "reels"
+            : type.ToLowerInvariant();
+    }
+
     private static string NormalizeInstagramPostUrl(string? pageUrl, string fallbackUrl, string externalId)
     {
         var preferredUrl = string.IsNullOrWhiteSpace(pageUrl) ? fallbackUrl : pageUrl;
@@ -1725,19 +1764,13 @@ internal sealed partial class RpaInstagramInspectionProvider(
             return fallbackUrl;
         }
 
-        var type = match.Groups["type"].Value.ToLowerInvariant();
-        if (type.Equals("reel", StringComparison.OrdinalIgnoreCase))
-        {
-            type = "reels";
-        }
-
         var id = match.Groups["id"].Value;
         if (string.IsNullOrWhiteSpace(id))
         {
             id = externalId;
         }
 
-        return $"https://www.instagram.com/{type}/{id}/";
+        return $"https://www.instagram.com/{NormalizeInstagramPostType(match.Groups["type"].Value)}/{id}/";
     }
 
     [GeneratedRegex(@"(?<followers>[\d\.,]+[kKmM]?)\s+Followers", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
