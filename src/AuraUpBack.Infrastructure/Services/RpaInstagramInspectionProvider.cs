@@ -253,11 +253,15 @@ internal sealed partial class RpaInstagramInspectionProvider(
                         ReportProgress(
                             request.JobId,
                             candidate.IsRefresh ? "Reel metrics refreshed" : "Reel analyzed",
-                            post.Caption,
+                            FormatPostProgress(post, candidate.IsRefresh),
                             posts.Count,
                             seenExternalIds.Count,
                             posts.Count);
                     }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception exception)
                 {
@@ -683,7 +687,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
               const anchors = Array.from(document.querySelectorAll('a[href]'));
               return anchors
                 .map((anchor) => anchor.href || "")
-                .filter((href) => /\/(reel|tv|p)\//i.test(href));
+                .filter((href) => /\/(reel|tv)\//i.test(href));
             }
             """);
 
@@ -799,12 +803,14 @@ internal sealed partial class RpaInstagramInspectionProvider(
 
         var urls = PostUrlRegex()
             .Matches(rawHtml)
+            .Where(match => IsReelPostType(match.Groups["type"].Value))
             .Select(match => $"https://www.instagram.com/{match.Groups["type"].Value}/{match.Groups["id"].Value}/")
             .ToList();
 
         urls.AddRange(
             EscapedPostUrlRegex()
                 .Matches(rawHtml)
+                .Where(match => IsReelPostType(match.Groups["type"].Value))
                 .Select(match => $"https://www.instagram.com/{match.Groups["type"].Value}/{match.Groups["id"].Value}/"));
 
         return urls;
@@ -974,17 +980,31 @@ internal sealed partial class RpaInstagramInspectionProvider(
 
                       const parseCount = (raw) => {
                         if (!raw) return 0;
-                        const cleaned = String(raw).replace(/[\s,   ]/g, '').toLowerCase();
-                        const m = cleaned.match(/^([\d.]+)([kmb])?$/);
+                        const normalizedRaw = String(raw)
+                          .replace(/[\u00a0\u2009\u202f]/g, ' ')
+                          .trim()
+                          .toLowerCase();
+                        const m = normalizedRaw.match(/([\d.,]+)\s*(k|m|b|mil|millones?|million|billions?)?/);
                         if (!m) {
-                          const digits = cleaned.match(/\d+/);
+                          const digits = normalizedRaw.match(/\d+/);
                           return digits ? parseInt(digits[0], 10) : 0;
                         }
-                        const value = parseFloat(m[1]);
-                        const suffix = m[2];
-                        if (suffix === 'k') return Math.round(value * 1_000);
-                        if (suffix === 'm') return Math.round(value * 1_000_000);
-                        if (suffix === 'b') return Math.round(value * 1_000_000_000);
+                        let numberText = m[1];
+                        if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(numberText)) {
+                          numberText = numberText.replace(/,/g, '');
+                        } else if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(numberText)) {
+                          numberText = numberText.replace(/\./g, '').replace(',', '.');
+                        } else {
+                          numberText = numberText.replace(',', '.');
+                        }
+
+                        const value = parseFloat(numberText);
+                        if (!Number.isFinite(value)) return 0;
+
+                        const suffix = m[2] || '';
+                        if (suffix === 'k' || suffix === 'mil') return Math.round(value * 1_000);
+                        if (suffix === 'm' || suffix.startsWith('millon') || suffix === 'million') return Math.round(value * 1_000_000);
+                        if (suffix === 'b' || suffix.startsWith('billion')) return Math.round(value * 1_000_000_000);
                         return Math.round(value);
                       };
 
@@ -1360,6 +1380,39 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 newPostsFound));
     }
 
+    private static string FormatPostProgress(InspectedPostPayload post, bool isRefresh)
+    {
+        var action = isRefresh ? "Refreshed" : "Found";
+        var caption = TruncateForProgress(post.Caption, 90);
+        return $"{action}: {FormatCompactNumber(post.Views)} views | {FormatCompactNumber(post.Likes)} likes | {FormatCompactNumber(post.Comments)} comments | {caption}";
+    }
+
+    private static string FormatCompactNumber(long value)
+    {
+        if (value >= 1_000_000)
+        {
+            return (value / 1_000_000d).ToString("0.#", CultureInfo.InvariantCulture) + "M";
+        }
+
+        if (value >= 1_000)
+        {
+            return (value / 1_000d).ToString("0.#", CultureInfo.InvariantCulture) + "K";
+        }
+
+        return value.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static string TruncateForProgress(string value, int maxLength)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value)
+            ? "No caption"
+            : Regex.Replace(value.Trim(), @"\s+", " ");
+
+        return normalized.Length <= maxLength
+            ? normalized
+            : normalized[..maxLength].TrimEnd() + "...";
+    }
+
     private static string ExtractDisplayName(string ogTitle, string handle)
     {
         var cleanTitle = ogTitle.Replace("Instagram photos and videos", string.Empty, StringComparison.OrdinalIgnoreCase)
@@ -1509,7 +1562,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
     {
         var match = Regex.Match(
             source,
-            $@"(?<value>[\d\.,]+[kKmM]?)\s+{metricName}",
+            $@"(?<value>[\d\.,]+(?:\s*(?:[kKmMbB]|mil|millones?|million|billions?))?)\s+{metricName}",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         return match.Success ? ParseCompactNumber(match.Groups["value"].Value) : 0;
@@ -1522,31 +1575,75 @@ internal sealed partial class RpaInstagramInspectionProvider(
             return 0;
         }
 
-        var normalized = rawValue.Trim().Replace(",", string.Empty);
+        var normalized = Regex.Replace(rawValue.Trim(), @"\s+", " ");
+        var suffixMatch = Regex.Match(
+            normalized,
+            @"^(?<number>[\d\.,]+)\s*(?<suffix>k|m|b|mil|millones?|million|billions?)?$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-        if (normalized.Length > 1 &&
-            char.ToUpperInvariant(normalized[^1]) == 'K' &&
-            decimal.TryParse(normalized[..^1], NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var thousands))
+        if (suffixMatch.Success)
         {
-            return (long)(thousands * 1_000);
+            var numberText = NormalizeMetricNumber(suffixMatch.Groups["number"].Value);
+            if (!decimal.TryParse(numberText, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var value))
+            {
+                return 0;
+            }
+
+            var suffix = suffixMatch.Groups["suffix"].Value;
+            if (suffix.Equals("K", StringComparison.OrdinalIgnoreCase) ||
+                suffix.Equals("mil", StringComparison.OrdinalIgnoreCase))
+            {
+                return (long)(value * 1_000);
+            }
+
+            if (suffix.Equals("M", StringComparison.OrdinalIgnoreCase) ||
+                suffix.StartsWith("millon", StringComparison.OrdinalIgnoreCase) ||
+                suffix.Equals("million", StringComparison.OrdinalIgnoreCase))
+            {
+                return (long)(value * 1_000_000);
+            }
+
+            if (suffix.Equals("B", StringComparison.OrdinalIgnoreCase) ||
+                suffix.StartsWith("billion", StringComparison.OrdinalIgnoreCase))
+            {
+                return (long)(value * 1_000_000_000);
+            }
+
+            return (long)value;
         }
 
-        if (normalized.Length > 1 &&
-            char.ToUpperInvariant(normalized[^1]) == 'M' &&
-            decimal.TryParse(normalized[..^1], NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var millions))
-        {
-            return (long)(millions * 1_000_000);
-        }
+        var normalizedExact = rawValue.Trim().Replace(",", string.Empty);
 
-        return long.TryParse(normalized, NumberStyles.Integer, CultureInfo.InvariantCulture, out var exact)
+        return long.TryParse(normalizedExact, NumberStyles.Integer, CultureInfo.InvariantCulture, out var exact)
             ? exact
             : 0;
+    }
+
+    private static string NormalizeMetricNumber(string value)
+    {
+        if (Regex.IsMatch(value, @"^\d{1,3}(,\d{3})+(\.\d+)?$", RegexOptions.CultureInvariant))
+        {
+            return value.Replace(",", string.Empty);
+        }
+
+        if (Regex.IsMatch(value, @"^\d{1,3}(\.\d{3})+(,\d+)?$", RegexOptions.CultureInvariant))
+        {
+            return value.Replace(".", string.Empty).Replace(',', '.');
+        }
+
+        return value.Replace(',', '.');
     }
 
     private static string ExtractExternalId(string postUrl, string handle, int index)
     {
         var segments = postUrl.TrimEnd('/').Split('/');
         return segments.LastOrDefault() ?? $"{handle}-post-{index + 1:00}";
+    }
+
+    private static bool IsReelPostType(string type)
+    {
+        return type.Equals("reel", StringComparison.OrdinalIgnoreCase) ||
+               type.Equals("tv", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeInstagramPostUrl(string? pageUrl, string fallbackUrl, string externalId)

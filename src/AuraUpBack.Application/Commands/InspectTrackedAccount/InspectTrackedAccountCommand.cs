@@ -27,8 +27,9 @@ internal sealed class InspectTrackedAccountCommandHandler(
 
         const int batchSize = 30;
         const int existingPostsRefreshCount = 12;
-        const int maxBatches = 100;
-        const int maxConsecutiveEmptyBatches = 3;
+        const int maxDiscoveryPosts = batchSize + existingPostsRefreshCount;
+        const int maxBatches = 1;
+        const int maxConsecutiveEmptyBatches = 1;
         var nowUtc = DateTime.UtcNow;
         var totalProcessedPosts = 0;
         var totalDiscoveredPosts = 0;
@@ -41,7 +42,7 @@ internal sealed class InspectTrackedAccountCommandHandler(
 
         ReportProgress(
             command.JobId,
-            "Preparing full reel sync",
+            "Preparing latest reel sync",
             $"Starting inspection for @{account.Handle}",
             totalProcessedPosts,
             totalDiscoveredPosts,
@@ -69,7 +70,7 @@ internal sealed class InspectTrackedAccountCommandHandler(
                     KnownPostExternalIds = excludedExternalIds.ToArray(),
                     StartFromPostIndex = 0,
                     DesiredNewPosts = batchSize,
-                    MaxDiscoveryPosts = excludedExternalIds.Count + (batchSize * 4),
+                    MaxDiscoveryPosts = maxDiscoveryPosts,
                     RefreshExistingPostsCount = existingPostsRefreshCount,
                     JobId = command.JobId
                 },
@@ -88,12 +89,14 @@ internal sealed class InspectTrackedAccountCommandHandler(
 
             var newlyDiscoveredCandidates = payload.SeenPostExternalIds
                 .Count(externalId => !previouslyExcludedExternalIds.Contains(externalId));
-            totalNewPostsFound += payload.Posts.Count;
+            var newlyInspectedPosts = payload.Posts
+                .Count(post => !previouslyExcludedExternalIds.Contains(post.ExternalId));
+            totalNewPostsFound += newlyInspectedPosts;
 
             ReportProgress(
                 command.JobId,
                 "Batch processed",
-                $"Processed {payload.Posts.Count} new reels for @{account.Handle}",
+                $"Processed {newlyInspectedPosts} new reels and refreshed {payload.Posts.Count - newlyInspectedPosts} existing reels for @{account.Handle}",
                 totalProcessedPosts,
                 totalDiscoveredPosts,
                 totalNewPostsFound);
