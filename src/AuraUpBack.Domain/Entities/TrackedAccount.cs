@@ -70,10 +70,19 @@ public sealed class TrackedAccount
         LastInspectedAtUtc = nowUtc;
         UpdatedAtUtc = nowUtc;
         CaptureMonthlyMetrics(nowUtc);
+        foreach (var post in Posts)
+        {
+            post.NormalizeExternalIdFromUrl();
+        }
+
         Posts.RemoveAll(post => post.IsInvalidRpaPlaceholder);
 
         var existingPostsByExternalId = Posts
-            .ToDictionary(x => x.ExternalId, StringComparer.OrdinalIgnoreCase);
+            .GroupBy(x => x.ExternalId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                x => x.Key,
+                x => x.OrderByDescending(post => post.Views).ThenByDescending(post => post.UpdatedAtUtc).First(),
+                StringComparer.OrdinalIgnoreCase);
 
         foreach (var externalId in payload.SeenPostExternalIds.Distinct(StringComparer.OrdinalIgnoreCase))
         {

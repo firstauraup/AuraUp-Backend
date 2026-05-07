@@ -279,8 +279,10 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 .Where(post => !knownIds.Contains(post.ExternalId))
                 .ToList();
             var refreshedPostsCount = posts.Count - newPosts.Count;
-            var averageViews = newPosts.Count == 0 ? 0 : newPosts.Average(x => x.Views);
-            var strongestPost = newPosts.OrderByDescending(x => x.Views).FirstOrDefault();
+            var summaryPosts = newPosts.Count == 0 ? posts : newPosts;
+            var averageViews = summaryPosts.Count == 0 ? 0 : summaryPosts.Average(x => x.Views);
+            var strongestPost = summaryPosts.OrderByDescending(x => x.Views).FirstOrDefault();
+            var strongestPostLabel = newPosts.Count == 0 ? "Strongest refreshed reel" : "Strongest new reel";
             var failedCandidateCount = Math.Max(0, inspectionCandidates.Count - posts.Count);
 
             return new InspectionPayload
@@ -296,8 +298,8 @@ internal sealed partial class RpaInstagramInspectionProvider(
                         : posts.Count == 0
                             ? $"RPA audit for @{normalizedHandle}. No new reels required analysis."
                             : failedCandidateCount == 0
-                            ? $"RPA audit for @{normalizedHandle}. {newPosts.Count} new reels were analyzed and {refreshedPostsCount} known reels were refreshed. Average estimated views: {averageViews:0}. Strongest new reel: {strongestPost?.Views ?? 0:n0} views. Prompt focus: {researchPrompt}"
-                            : $"RPA audit for @{normalizedHandle}. {newPosts.Count} new reels were analyzed, {refreshedPostsCount} known reels were refreshed, and {failedCandidateCount} candidate reels could not be opened in this pass. Average estimated views: {averageViews:0}. Strongest new reel: {strongestPost?.Views ?? 0:n0} views. Prompt focus: {researchPrompt}",
+                            ? $"RPA audit for @{normalizedHandle}. {newPosts.Count} new reels were analyzed and {refreshedPostsCount} known reels were refreshed. Average estimated views: {averageViews:0}. {strongestPostLabel}: {strongestPost?.Views ?? 0:n0} views. Prompt focus: {researchPrompt}"
+                            : $"RPA audit for @{normalizedHandle}. {newPosts.Count} new reels were analyzed, {refreshedPostsCount} known reels were refreshed, and {failedCandidateCount} candidate reels could not be opened in this pass. Average estimated views: {averageViews:0}. {strongestPostLabel}: {strongestPost?.Views ?? 0:n0} views. Prompt focus: {researchPrompt}",
                 SeenPostExternalIds = seenExternalIds,
                 Posts = posts
             };

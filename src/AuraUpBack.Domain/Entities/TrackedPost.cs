@@ -95,6 +95,22 @@ public sealed class TrackedPost
         UpdatedAtUtc = nowUtc;
     }
 
+    public void NormalizeExternalIdFromUrl()
+    {
+        if (!LooksLikeInvalidExternalId(ExternalId))
+        {
+            return;
+        }
+
+        var externalIdFromUrl = TryExtractExternalIdFromUrl(Url);
+        if (externalIdFromUrl is null)
+        {
+            return;
+        }
+
+        ExternalId = externalIdFromUrl;
+    }
+
     public void SetPerformance(decimal multiplier, bool isOutlier)
     {
         PerformanceMultiplier = multiplier;
@@ -167,5 +183,41 @@ public sealed class TrackedPost
                url.Contains("/reels/#", StringComparison.OrdinalIgnoreCase) ||
                url.EndsWith("/reels/", StringComparison.OrdinalIgnoreCase) ||
                url.EndsWith("/reel/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksLikeInvalidExternalId(string externalId)
+    {
+        return string.IsNullOrWhiteSpace(externalId) ||
+               externalId.Equals("#", StringComparison.OrdinalIgnoreCase) ||
+               externalId.Equals("reel", StringComparison.OrdinalIgnoreCase) ||
+               externalId.Equals("reels", StringComparison.OrdinalIgnoreCase) ||
+               externalId.Equals("tv", StringComparison.OrdinalIgnoreCase) ||
+               externalId.Equals("p", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? TryExtractExternalIdFromUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return null;
+        }
+
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 2)
+        {
+            return null;
+        }
+
+        var postType = segments[0];
+        var externalId = segments[1];
+        if (!postType.Equals("reel", StringComparison.OrdinalIgnoreCase) &&
+            !postType.Equals("reels", StringComparison.OrdinalIgnoreCase) &&
+            !postType.Equals("tv", StringComparison.OrdinalIgnoreCase) &&
+            !postType.Equals("p", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return LooksLikeInvalidExternalId(externalId) ? null : externalId;
     }
 }
