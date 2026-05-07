@@ -38,7 +38,9 @@ public sealed class TrackedPost
     public DateTime? LastAnalyzedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public bool ShouldBeTreatedAsReel => (IsReel || LooksLikeReelUrl(Url)) && !IsInvalidRpaPlaceholder;
-    public bool IsInvalidRpaPlaceholder => HasNoMetrics() && LooksLikeRpaPlaceholderCaption(Caption);
+    public bool IsInvalidRpaPlaceholder => HasNoMetrics() &&
+                                           (LooksLikeRpaPlaceholderCaption(Caption) ||
+                                            LooksLikeInvalidInstagramReelReference(ExternalId, Url));
 
     public void ApplyInspection(
         bool isReel,
@@ -157,5 +159,13 @@ public sealed class TrackedPost
                caption.Contains("esta página no está disponible", StringComparison.OrdinalIgnoreCase) ||
                caption.Contains("esta pagina no esta disponible", StringComparison.OrdinalIgnoreCase) ||
                caption.Contains("contenido no disponible", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksLikeInvalidInstagramReelReference(string externalId, string url)
+    {
+        return externalId.Equals("#", StringComparison.OrdinalIgnoreCase) ||
+               url.Contains("/reels/#", StringComparison.OrdinalIgnoreCase) ||
+               url.EndsWith("/reels/", StringComparison.OrdinalIgnoreCase) ||
+               url.EndsWith("/reel/", StringComparison.OrdinalIgnoreCase);
     }
 }

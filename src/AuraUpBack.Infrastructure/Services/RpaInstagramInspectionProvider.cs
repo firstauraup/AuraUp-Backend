@@ -1163,7 +1163,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     }
                 }
 
-                if (IsInvalidRpaPlaceholder(caption, views, likes, comments, shares, igPlayCount, fbPlayCount, fbLikes, fbComments))
+                if (IsInvalidRpaPlaceholder(canonicalUrl, externalId, caption, views, likes, comments, shares, igPlayCount, fbPlayCount, fbLikes, fbComments))
                 {
                     logger.LogWarning("RPA skipped placeholder post {PostUrl} because no real metrics or caption were extracted.", canonicalUrl);
                     return null;
@@ -1697,6 +1697,8 @@ internal sealed partial class RpaInstagramInspectionProvider(
     }
 
     private static bool IsInvalidRpaPlaceholder(
+        string postUrl,
+        string externalId,
         string caption,
         long views,
         long likes,
@@ -1716,7 +1718,9 @@ internal sealed partial class RpaInstagramInspectionProvider(
                            fbLikes <= 0 &&
                            fbComments <= 0;
 
-        return hasNoMetrics && LooksLikeRpaPlaceholderCaption(caption);
+        return hasNoMetrics &&
+               (LooksLikeRpaPlaceholderCaption(caption) ||
+                LooksLikeInvalidInstagramReelReference(externalId, postUrl));
     }
 
     private static bool LooksLikeRpaPlaceholderCaption(string caption)
@@ -1734,6 +1738,14 @@ internal sealed partial class RpaInstagramInspectionProvider(
                caption.Contains("esta página no está disponible", StringComparison.OrdinalIgnoreCase) ||
                caption.Contains("esta pagina no esta disponible", StringComparison.OrdinalIgnoreCase) ||
                caption.Contains("contenido no disponible", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksLikeInvalidInstagramReelReference(string externalId, string url)
+    {
+        return externalId.Equals("#", StringComparison.OrdinalIgnoreCase) ||
+               url.Contains("/reels/#", StringComparison.OrdinalIgnoreCase) ||
+               url.EndsWith("/reels/", StringComparison.OrdinalIgnoreCase) ||
+               url.EndsWith("/reel/", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsReelPostType(string type)

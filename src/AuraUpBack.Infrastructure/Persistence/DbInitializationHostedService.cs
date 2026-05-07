@@ -236,6 +236,10 @@ internal sealed class DbInitializationHostedService(
                   OR LOWER("Caption") LIKE '%esta página no está disponible%'
                   OR LOWER("Caption") LIKE '%esta pagina no esta disponible%'
                   OR LOWER("Caption") LIKE '%contenido no disponible%'
+                  OR "ExternalId" = '#'
+                  OR LOWER("Url") LIKE '%/reels/#%'
+                  OR LOWER("Url") LIKE '%/reels/'
+                  OR LOWER("Url") LIKE '%/reel/'
               );
             """;
 
