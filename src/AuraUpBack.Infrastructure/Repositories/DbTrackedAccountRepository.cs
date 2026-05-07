@@ -60,6 +60,32 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
             .FirstOrDefaultAsync(x => x.Handle == normalized, cancellationToken);
     }
 
+    public async Task<TrackedPost?> GetPostByIdAsync(Guid accountId, Guid postId, CancellationToken cancellationToken)
+    {
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await dbContext.TrackedPosts
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.AccountId == accountId && x.Id == postId, cancellationToken);
+    }
+
+    public async Task SetPostTranscriptAsync(
+        Guid accountId,
+        Guid postId,
+        string transcript,
+        string transcriptHook,
+        string transcriptScript,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        var post = await dbContext.TrackedPosts
+            .FirstOrDefaultAsync(x => x.AccountId == accountId && x.Id == postId, cancellationToken)
+            ?? throw new InvalidOperationException("Tracked post was not found.");
+
+        post.SetTranscript(transcript, transcriptHook, transcriptScript, nowUtc);
+        await dbContext.SaveChangesAsync(cancellationToken);
+    }
+
     public async Task UpsertAsync(TrackedAccount account, CancellationToken cancellationToken)
     {
         const int maxAttempts = 2;
@@ -108,6 +134,7 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
                     {
                         if (existingPostsByExternalId.TryGetValue(post.ExternalId, out var trackedPost))
                         {
+                            PreserveExistingTranscript(post, trackedPost);
                             post.AccountId = existing.Id;
                             dbContext.Entry(trackedPost).CurrentValues.SetValues(post);
                             continue;
@@ -157,6 +184,24 @@ internal sealed class DbTrackedAccountRepository(IDbContextFactory<AuraUpBackDbC
         }
 
         throw lastConcurrencyException ?? new DbUpdateConcurrencyException("The tracked account could not be saved due to a concurrency conflict.");
+    }
+
+    private static void PreserveExistingTranscript(TrackedPost incomingPost, TrackedPost existingPost)
+    {
+        if (!string.IsNullOrWhiteSpace(incomingPost.Transcript) ||
+            string.IsNullOrWhiteSpace(existingPost.Transcript))
+        {
+            return;
+        }
+
+        incomingPost.Transcript = existingPost.Transcript;
+        incomingPost.TranscriptHook = existingPost.TranscriptHook;
+        incomingPost.TranscriptScript = existingPost.TranscriptScript;
+        incomingPost.Topic = existingPost.Topic;
+        incomingPost.TopicConfidence = existingPost.TopicConfidence;
+        incomingPost.ContentAngle = existingPost.ContentAngle;
+        incomingPost.HookStyle = existingPost.HookStyle;
+        incomingPost.ThemeSummary = existingPost.ThemeSummary;
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken cancellationToken)
