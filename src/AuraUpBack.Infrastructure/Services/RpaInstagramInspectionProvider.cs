@@ -1156,6 +1156,12 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     }
                 }
 
+                if (IsInvalidRpaPlaceholder(caption, views, likes, comments, shares, igPlayCount, fbPlayCount, fbLikes, fbComments))
+                {
+                    logger.LogWarning("RPA skipped placeholder post {PostUrl} because no real metrics or caption were extracted.", canonicalUrl);
+                    return null;
+                }
+
                 logger.LogInformation(
                     "RPA reel metrics for {PostUrl}: views={Views}, likes={Likes}, comments={Comments}, shares={Shares} igPlay={IgPlay} fbPlay={FbPlay} fbLikes={FbLikes} fbComments={FbComments} (api={HasApi})",
                     canonicalUrl,
@@ -1638,6 +1644,41 @@ internal sealed partial class RpaInstagramInspectionProvider(
     {
         var segments = postUrl.TrimEnd('/').Split('/');
         return segments.LastOrDefault() ?? $"{handle}-post-{index + 1:00}";
+    }
+
+    private static bool IsInvalidRpaPlaceholder(
+        string caption,
+        long views,
+        long likes,
+        long comments,
+        long shares,
+        long igPlayCount,
+        long fbPlayCount,
+        long fbLikes,
+        long fbComments)
+    {
+        var hasNoMetrics = views <= 0 &&
+                           likes <= 0 &&
+                           comments <= 0 &&
+                           shares <= 0 &&
+                           igPlayCount <= 0 &&
+                           fbPlayCount <= 0 &&
+                           fbLikes <= 0 &&
+                           fbComments <= 0;
+
+        return hasNoMetrics && LooksLikeRpaPlaceholderCaption(caption);
+    }
+
+    private static bool LooksLikeRpaPlaceholderCaption(string caption)
+    {
+        if (string.IsNullOrWhiteSpace(caption))
+        {
+            return false;
+        }
+
+        return caption.Contains("captured via RPA", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("capturada", StringComparison.OrdinalIgnoreCase) &&
+               caption.Contains("RPA", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsReelPostType(string type)

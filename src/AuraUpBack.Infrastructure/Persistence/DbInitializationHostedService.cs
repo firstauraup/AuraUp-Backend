@@ -70,6 +70,7 @@ internal sealed class DbInitializationHostedService(
         await EnsureTrackedPostsSharesColumnAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsSplitMetricsColumnsAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsTranscriptDetailColumnsAsync(dbContext, cancellationToken);
+        await DeleteInvalidRpaPlaceholderPostsAsync(dbContext, cancellationToken);
         await EnsureAccountMetricSnapshotsTableAsync(dbContext, cancellationToken);
         await EnsureUserTablesAsync(dbContext, cancellationToken);
         await EnsureViralIdeaTablesAsync(dbContext, cancellationToken);
@@ -209,6 +210,28 @@ internal sealed class DbInitializationHostedService(
             """
             ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "TranscriptHook" character varying(1000) NOT NULL DEFAULT '';
             ALTER TABLE "TrackedPosts" ADD COLUMN IF NOT EXISTS "TranscriptScript" character varying(12000) NOT NULL DEFAULT '';
+            """;
+
+        await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task DeleteInvalidRpaPlaceholderPostsAsync(AuraUpBackDbContext dbContext, CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            DELETE FROM "TrackedPosts"
+            WHERE "Views" = 0
+              AND "Likes" = 0
+              AND "Comments" = 0
+              AND COALESCE("Shares", 0) = 0
+              AND COALESCE("IgPlayCount", 0) = 0
+              AND COALESCE("FbPlayCount", 0) = 0
+              AND COALESCE("FbLikes", 0) = 0
+              AND COALESCE("FbComments", 0) = 0
+              AND (
+                  LOWER("Caption") LIKE 'instagram post % captured via rpa for @%'
+                  OR LOWER("Caption") LIKE 'publicaci%n %capturad% rpa para @%'
+              );
             """;
 
         await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);

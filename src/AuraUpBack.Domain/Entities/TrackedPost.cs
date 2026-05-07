@@ -37,7 +37,8 @@ public sealed class TrackedPost
     public DateTime? LastSeenAtUtc { get; set; }
     public DateTime? LastAnalyzedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
-    public bool ShouldBeTreatedAsReel => IsReel || LooksLikeReelUrl(Url);
+    public bool ShouldBeTreatedAsReel => (IsReel || LooksLikeReelUrl(Url)) && !IsInvalidRpaPlaceholder;
+    public bool IsInvalidRpaPlaceholder => HasNoMetrics() && LooksLikeRpaPlaceholderCaption(Caption);
 
     public void ApplyInspection(
         bool isReel,
@@ -125,6 +126,31 @@ public sealed class TrackedPost
         }
 
         return url.Contains("/reel/", StringComparison.OrdinalIgnoreCase)
-            || url.Contains("/reels/", StringComparison.OrdinalIgnoreCase);
+            || url.Contains("/reels/", StringComparison.OrdinalIgnoreCase)
+            || url.Contains("/tv/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool HasNoMetrics()
+    {
+        return Views <= 0 &&
+               Likes <= 0 &&
+               Comments <= 0 &&
+               Shares <= 0 &&
+               IgPlayCount <= 0 &&
+               FbPlayCount <= 0 &&
+               FbLikes <= 0 &&
+               FbComments <= 0;
+    }
+
+    private static bool LooksLikeRpaPlaceholderCaption(string caption)
+    {
+        if (string.IsNullOrWhiteSpace(caption))
+        {
+            return false;
+        }
+
+        return caption.Contains("captured via RPA", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("capturada", StringComparison.OrdinalIgnoreCase) &&
+               caption.Contains("RPA", StringComparison.OrdinalIgnoreCase);
     }
 }

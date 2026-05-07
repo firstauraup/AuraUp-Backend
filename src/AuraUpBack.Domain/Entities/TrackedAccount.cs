@@ -70,6 +70,7 @@ public sealed class TrackedAccount
         LastInspectedAtUtc = nowUtc;
         UpdatedAtUtc = nowUtc;
         CaptureMonthlyMetrics(nowUtc);
+        Posts.RemoveAll(post => post.IsInvalidRpaPlaceholder);
 
         var existingPostsByExternalId = Posts
             .ToDictionary(x => x.ExternalId, StringComparer.OrdinalIgnoreCase);
@@ -115,7 +116,9 @@ public sealed class TrackedAccount
                 nowUtc);
         }
 
-        Posts = existingPostsByExternalId.Values.ToList();
+        Posts = existingPostsByExternalId.Values
+            .Where(post => !post.IsInvalidRpaPlaceholder)
+            .ToList();
 
         OutlierCalculator.Apply(Posts.Where(x => x.ShouldBeTreatedAsReel).ToList());
         Posts = Posts
