@@ -20,20 +20,33 @@ internal sealed class DbAlertSignalRepository(IDbContextFactory<AuraUpBackDbCont
     public async Task<bool> ExistsAsync(Guid accountId, string externalPostId, CancellationToken cancellationToken)
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await dbContext.AlertSignals.AnyAsync(
-            x => x.AccountId == accountId && x.ExternalPostId == externalPostId,
-            cancellationToken);
+        var existingExternalIds = await dbContext.AlertSignals
+            .AsNoTracking()
+            .Where(x => x.AccountId == accountId)
+            .Select(x => x.ExternalPostId)
+            .ToListAsync(cancellationToken);
+
+        return existingExternalIds.Any(x => x.Equals(externalPostId, StringComparison.OrdinalIgnoreCase));
     }
 
     public async Task<int> GetHighestNotificationMultiplierAsync(Guid accountId, string externalPostId, CancellationToken cancellationToken)
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await dbContext.AlertSignals
+        var accountAlerts = await dbContext.AlertSignals
             .AsNoTracking()
-            .Where(x => x.AccountId == accountId && x.ExternalPostId == externalPostId)
-            .OrderByDescending(x => x.NotificationMultiplier)
+            .Where(x => x.AccountId == accountId)
+            .Select(x => new
+            {
+                x.ExternalPostId,
+                x.NotificationMultiplier
+            })
+            .ToListAsync(cancellationToken);
+
+        return accountAlerts
+            .Where(x => x.ExternalPostId.Equals(externalPostId, StringComparison.OrdinalIgnoreCase))
             .Select(x => x.NotificationMultiplier)
-            .FirstOrDefaultAsync(cancellationToken);
+            .DefaultIfEmpty(0)
+            .Max();
     }
 
     public async Task AddAsync(AlertSignal signal, CancellationToken cancellationToken)
