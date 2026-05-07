@@ -6,9 +6,12 @@ public interface IInspectionJobQueue
     InspectionJobStatus Enqueue(Guid accountId, string source);
     InspectionJobStatus? GetLatest(Guid accountId);
     InspectionJobRequest? Claim(Guid jobId);
+    CancellationTokenSource CreateLinkedCancellationTokenSource(Guid jobId, CancellationToken cancellationToken);
+    bool IsCancellationRequested(Guid jobId);
     ValueTask<InspectionJobRequest> DequeueAsync(CancellationToken cancellationToken);
     void MarkRunning(Guid jobId);
     void MarkCompleted(Guid jobId);
+    void MarkCanceled(Guid jobId, string reason);
     void MarkFailed(Guid jobId, string error);
     void MarkProgress(Guid jobId, InspectionJobProgress progress);
 }

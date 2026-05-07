@@ -28,18 +28,30 @@ internal sealed class InspectionJobBackgroundService(
         while (!stoppingToken.IsCancellationRequested)
         {
             InspectionJobRequest? job = null;
+            CancellationTokenSource? jobCancellation = null;
 
             try
             {
                 job = await inspectionJobQueue.DequeueAsync(stoppingToken);
+                jobCancellation = inspectionJobQueue.CreateLinkedCancellationTokenSource(job.JobId, stoppingToken);
+                jobCancellation.Token.ThrowIfCancellationRequested();
                 inspectionJobQueue.MarkRunning(job.JobId);
 
-                await commandDispatcher.SendAsync(new InspectTrackedAccountCommand(job.AccountId, job.JobId), stoppingToken);
+                await commandDispatcher.SendAsync(new InspectTrackedAccountCommand(job.AccountId, job.JobId), jobCancellation.Token);
                 inspectionJobQueue.MarkCompleted(job.JobId);
                 logger.LogInformation("Inspection job {JobId} completed for account {AccountId}", job.JobId, job.AccountId);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
+            }
+            catch (OperationCanceledException) when (job is not null &&
+                                                     inspectionJobQueue.IsCancellationRequested(job.JobId))
+            {
+                inspectionJobQueue.MarkCanceled(job.JobId, "Inspection job was canceled by a manual request.");
+                logger.LogInformation(
+                    "Inspection job {JobId} canceled so a manual inspection can run for account {AccountId}",
+                    job.JobId,
+                    job.AccountId);
             }
             catch (Exception exception)
             {
@@ -51,6 +63,10 @@ internal sealed class InspectionJobBackgroundService(
                 }
 
                 logger.LogError(exception, "Inspection worker failed before a job could be claimed.");
+            }
+            finally
+            {
+                jobCancellation?.Dispose();
             }
         }
     }

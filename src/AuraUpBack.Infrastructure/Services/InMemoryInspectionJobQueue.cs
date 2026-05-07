@@ -4,9 +4,17 @@ namespace AuraUpBack.Infrastructure.Services;
 
 internal sealed class InMemoryInspectionJobQueue : IInspectionJobQueue
 {
+    private const string ManualSource = "Manual";
+    private const string QueuedStatus = "Queued";
+    private const string RunningStatus = "Running";
+    private const string FailedStatus = "Failed";
+    private const string CanceledPhase = "Canceled";
+    private const string ManualCancellationReason = "Canceled because a manual inspection was requested.";
+
     private readonly SemaphoreSlim _signal = new(0);
     private readonly Lock _sync = new();
     private readonly Dictionary<Guid, InspectionJobRequest> _requestsByJobId = [];
+    private readonly Dictionary<Guid, CancellationTokenSource> _cancellationSourcesByJobId = [];
     private readonly List<Guid> _manualQueue = [];
     private readonly List<Guid> _monitoringQueue = [];
     private readonly Dictionary<Guid, InspectionJobStatus> _latestByAccountId = [];
@@ -14,69 +22,62 @@ internal sealed class InMemoryInspectionJobQueue : IInspectionJobQueue
 
     public InspectionJobStatus Enqueue(Guid accountId, string source)
     {
-        InspectionJobStatus? queuedStatus = null;
+        var statusesToPublish = new List<InspectionJobStatus>();
+        InspectionJobStatus? result = null;
         var shouldSignal = false;
 
         lock (_sync)
         {
+            if (IsManual(source))
+            {
+                statusesToPublish.AddRange(CancelInterruptibleJobs(ManualCancellationReason));
+            }
+
             if (_latestByAccountId.TryGetValue(accountId, out var existing) &&
-                (existing.Status.Equals("Queued", StringComparison.OrdinalIgnoreCase) ||
-                 existing.Status.Equals("Running", StringComparison.OrdinalIgnoreCase)))
+                IsActive(existing))
             {
-                if (CanPromoteToManual(existing, source))
-                {
-                    PromoteToManual(existing.JobId);
-                    queuedStatus = existing with
-                    {
-                        Source = "Manual"
-                    };
-
-                    _latestByAccountId[accountId] = queuedStatus;
-                    _requestsByJobId[existing.JobId] = _requestsByJobId[existing.JobId] with
-                    {
-                        Source = "Manual"
-                    };
-                }
-
-                return queuedStatus ?? existing;
+                result = existing;
             }
+            else
+            {
+                var job = new InspectionJobRequest(Guid.NewGuid(), accountId, source, DateTime.UtcNow);
+                var status = new InspectionJobStatus(
+                    job.JobId,
+                    job.AccountId,
+                    job.Source,
+                    QueuedStatus,
+                    job.QueuedAtUtc,
+                    null,
+                    null,
+                    string.Empty,
+                    QueuedStatus,
+                    string.Empty,
+                    0,
+                    0,
+                    0,
+                    []);
 
-            var job = new InspectionJobRequest(Guid.NewGuid(), accountId, source, DateTime.UtcNow);
-            var status = new InspectionJobStatus(
-                job.JobId,
-                job.AccountId,
-                job.Source,
-                "Queued",
-                job.QueuedAtUtc,
-                null,
-                null,
-                string.Empty,
-                "Queued",
-                string.Empty,
-                0,
-                0,
-                0,
-                []);
-
-            _latestByAccountId[accountId] = status;
-            _requestsByJobId[job.JobId] = job;
-            EnqueueByPriority(job);
-            queuedStatus = status;
-            shouldSignal = true;
+                _latestByAccountId[accountId] = status;
+                _requestsByJobId[job.JobId] = job;
+                _cancellationSourcesByJobId[job.JobId] = new CancellationTokenSource();
+                EnqueueByPriority(job);
+                statusesToPublish.Add(status);
+                result = status;
+                shouldSignal = true;
+            }
         }
 
-        if (queuedStatus is not null)
+        foreach (var status in statusesToPublish)
         {
-            StatusChanged?.Invoke(queuedStatus);
-            if (shouldSignal)
-            {
-                _signal.Release();
-            }
-
-            return queuedStatus;
+            StatusChanged?.Invoke(status);
         }
 
-        throw new InvalidOperationException("Inspection job could not be queued.");
+        if (shouldSignal)
+        {
+            _signal.Release();
+        }
+
+        return result ?? throw new InvalidOperationException("Inspection job could not be queued.");
     }
 
     public InspectionJobStatus? GetLatest(Guid accountId)
@@ -103,6 +104,29 @@ internal sealed class InMemoryInspectionJobQueue : IInspectionJobQueue
         }
     }
 
+    public CancellationTokenSource CreateLinkedCancellationTokenSource(Guid jobId, CancellationToken cancellationToken)
+    {
+        lock (_sync)
+        {
+            if (!_cancellationSourcesByJobId.TryGetValue(jobId, out var jobCancellation))
+            {
+                jobCancellation = new CancellationTokenSource();
+                _cancellationSourcesByJobId[jobId] = jobCancellation;
+            }
+
+            return CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, jobCancellation.Token);
+        }
+    }
+
+    public bool IsCancellationRequested(Guid jobId)
+    {
+        lock (_sync)
+        {
+            return _cancellationSourcesByJobId.TryGetValue(jobId, out var cancellation) &&
+                   cancellation.IsCancellationRequested;
+        }
+    }
+
     public ValueTask<InspectionJobRequest> DequeueAsync(CancellationToken cancellationToken)
     {
         return new ValueTask<InspectionJobRequest>(DequeueCoreAsync(cancellationToken));
@@ -110,12 +134,20 @@ internal sealed class InMemoryInspectionJobQueue : IInspectionJobQueue
 
     public void MarkRunning(Guid jobId)
     {
-        Update(jobId, status => status with
+        Update(jobId, status =>
         {
-            Status = "Running",
-            StartedAtUtc = DateTime.UtcNow,
-            Error = string.Empty,
-            CurrentPhase = "Starting"
+            if (!IsActive(status))
+            {
+                return status;
+            }
+
+            return status with
+            {
+                Status = RunningStatus,
+                StartedAtUtc = DateTime.UtcNow,
+                Error = string.Empty,
+                CurrentPhase = "Starting"
+            };
         });
     }
 
@@ -128,23 +160,43 @@ internal sealed class InMemoryInspectionJobQueue : IInspectionJobQueue
             Error = string.Empty,
             CurrentPhase = "Completed"
         });
+        DisposeCancellationSource(jobId);
+    }
+
+    public void MarkCanceled(Guid jobId, string reason)
+    {
+        Update(jobId, status => status with
+        {
+            Status = FailedStatus,
+            CompletedAtUtc = DateTime.UtcNow,
+            Error = reason,
+            CurrentPhase = CanceledPhase,
+            CurrentItem = string.Empty
+        });
+        DisposeCancellationSource(jobId);
     }
 
     public void MarkFailed(Guid jobId, string error)
     {
         Update(jobId, status => status with
         {
-            Status = "Failed",
+            Status = FailedStatus,
             CompletedAtUtc = DateTime.UtcNow,
             Error = error,
             CurrentPhase = "Failed"
         });
+        DisposeCancellationSource(jobId);
     }
 
     public void MarkProgress(Guid jobId, InspectionJobProgress progress)
     {
         Update(jobId, status =>
         {
+            if (!IsActive(status))
+            {
+                return status;
+            }
+
             var recentItems = progress.RecentItems?.Where(x => !string.IsNullOrWhiteSpace(x)).TakeLast(20).ToList()
                 ?? status.RecentItems.ToList();
 
@@ -246,25 +298,78 @@ internal sealed class InMemoryInspectionJobQueue : IInspectionJobQueue
         _monitoringQueue.Add(job.JobId);
     }
 
-    private void PromoteToManual(Guid jobId)
+    private List<InspectionJobStatus> CancelInterruptibleJobs(string reason)
     {
-        _monitoringQueue.Remove(jobId);
+        var canceledStatuses = new List<InspectionJobStatus>();
 
-        if (!_manualQueue.Contains(jobId))
+        foreach (var status in _latestByAccountId.Values.ToList())
         {
-            _manualQueue.Add(jobId);
+            if (!CanInterrupt(status))
+            {
+                continue;
+            }
+
+            _manualQueue.Remove(status.JobId);
+            _monitoringQueue.Remove(status.JobId);
+            var wasStillQueued = _requestsByJobId.Remove(status.JobId);
+
+            if (_cancellationSourcesByJobId.TryGetValue(status.JobId, out var cancellation))
+            {
+                cancellation.Cancel();
+            }
+
+            var canceledStatus = status with
+            {
+                Status = FailedStatus,
+                CompletedAtUtc = DateTime.UtcNow,
+                Error = reason,
+                CurrentPhase = CanceledPhase,
+                CurrentItem = string.Empty
+            };
+
+            _latestByAccountId[status.AccountId] = canceledStatus;
+            canceledStatuses.Add(canceledStatus);
+
+            if (wasStillQueued)
+            {
+                if (_cancellationSourcesByJobId.Remove(status.JobId, out var queuedCancellation))
+                {
+                    queuedCancellation.Dispose();
+                }
+            }
         }
+
+        return canceledStatuses;
     }
 
-    private static bool CanPromoteToManual(InspectionJobStatus existing, string requestedSource)
+    private static bool CanInterrupt(InspectionJobStatus status)
     {
-        return existing.Status.Equals("Queued", StringComparison.OrdinalIgnoreCase) &&
-               IsManual(requestedSource) &&
-               !IsManual(existing.Source);
+        return !IsManual(status.Source) && IsActive(status);
+    }
+
+    private static bool IsActive(InspectionJobStatus status)
+    {
+        return status.Status.Equals(QueuedStatus, StringComparison.OrdinalIgnoreCase) ||
+               status.Status.Equals(RunningStatus, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsManual(string source)
     {
-        return source.Equals("Manual", StringComparison.OrdinalIgnoreCase);
+        return source.Equals(ManualSource, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void DisposeCancellationSource(Guid jobId)
+    {
+        CancellationTokenSource? cancellation = null;
+
+        lock (_sync)
+        {
+            if (_cancellationSourcesByJobId.Remove(jobId, out var existing))
+            {
+                cancellation = existing;
+            }
+        }
+
+        cancellation?.Dispose();
     }
 }

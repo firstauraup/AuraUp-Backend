@@ -27,36 +27,59 @@ public sealed class InspectionJobRunner(
 
     private async Task RunAsync(Guid jobId)
     {
+        InspectionJobRequest? job = null;
+        CancellationTokenSource? jobCancellation = null;
+        var slotAcquired = false;
+
         try
         {
-            var job = inspectionJobQueue.Claim(jobId);
+            job = inspectionJobQueue.Claim(jobId);
             if (job is null)
             {
                 return;
             }
 
-            await _slots.WaitAsync();
+            jobCancellation = inspectionJobQueue.CreateLinkedCancellationTokenSource(job.JobId, CancellationToken.None);
 
-            try
-            {
-                inspectionJobQueue.MarkRunning(job.JobId);
-                await commandDispatcher.SendAsync(new InspectTrackedAccountCommand(job.AccountId, job.JobId), CancellationToken.None);
-                inspectionJobQueue.MarkCompleted(job.JobId);
-                _ = WarmMediaAsync(job.AccountId);
-                logger.LogInformation("Inspection job {JobId} completed for account {AccountId}", job.JobId, job.AccountId);
-            }
-            catch (Exception exception)
+            await _slots.WaitAsync(jobCancellation.Token);
+            slotAcquired = true;
+            jobCancellation.Token.ThrowIfCancellationRequested();
+
+            inspectionJobQueue.MarkRunning(job.JobId);
+            await commandDispatcher.SendAsync(new InspectTrackedAccountCommand(job.AccountId, job.JobId), jobCancellation.Token);
+            inspectionJobQueue.MarkCompleted(job.JobId);
+            _ = WarmMediaAsync(job.AccountId);
+            logger.LogInformation("Inspection job {JobId} completed for account {AccountId}", job.JobId, job.AccountId);
+        }
+        catch (OperationCanceledException) when (job is not null &&
+                                                 inspectionJobQueue.IsCancellationRequested(job.JobId))
+        {
+            inspectionJobQueue.MarkCanceled(job.JobId, "Inspection job was canceled by a manual request.");
+            logger.LogInformation(
+                "Inspection job {JobId} canceled so a manual inspection can run for account {AccountId}",
+                job.JobId,
+                job.AccountId);
+        }
+        catch (Exception exception)
+        {
+            if (job is not null)
             {
                 inspectionJobQueue.MarkFailed(job.JobId, exception.Message);
                 logger.LogError(exception, "Inspection job {JobId} failed for account {AccountId}", job.JobId, job.AccountId);
             }
-            finally
+            else
             {
-                _slots.Release();
+                logger.LogError(exception, "Inspection job runner failed before job {JobId} could be claimed.", jobId);
             }
         }
         finally
         {
+            if (slotAcquired)
+            {
+                _slots.Release();
+            }
+
+            jobCancellation?.Dispose();
             _scheduledJobs.TryRemove(jobId, out _);
         }
     }

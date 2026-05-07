@@ -69,6 +69,10 @@ internal sealed partial class RpaInstagramInspectionProvider(
         IBrowser? browser = null;
         IPage? page = null;
         var usePersistentProfile = hasAuthenticatedSession;
+        using var cancellationRegistration = cancellationToken.Register(() =>
+        {
+            _ = Task.Run(CloseActiveBrowserResourcesAsync);
+        });
 
         try
         {
@@ -173,7 +177,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                         attempt,
                         normalizedHandle);
                 }
-                catch (PlaywrightException exception) when (IsPageCrashException(exception))
+                catch (PlaywrightException exception) when (!cancellationToken.IsCancellationRequested && IsPageCrashException(exception))
                 {
                     logger.LogWarning(
                         exception,
@@ -333,6 +337,10 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 },
                 cancellationToken);
         }
+        catch (PlaywrightException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
         finally
         {
             if (page is not null)
@@ -352,10 +360,35 @@ internal sealed partial class RpaInstagramInspectionProvider(
 
             if (browser is not null)
             {
-                await browser.CloseAsync();
+                await TryCloseBrowserAsync(browser);
             }
 
             playwright?.Dispose();
+        }
+
+        async Task CloseActiveBrowserResourcesAsync()
+        {
+            try
+            {
+                if (page is not null)
+                {
+                    await TryClosePageAsync(page);
+                }
+
+                if (!usePersistentProfile && context is not null)
+                {
+                    await TryCloseContextAsync(context);
+                }
+
+                if (browser is not null)
+                {
+                    await TryCloseBrowserAsync(browser);
+                }
+            }
+            catch (Exception exception)
+            {
+                logger.LogDebug(exception, "RPA browser cleanup failed after inspection cancellation.");
+            }
         }
     }
 
@@ -552,7 +585,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 scrollPasses++;
                 await page.WaitForTimeoutAsync(scrollPasses <= 3 ? 2_500 : 1_500);
             }
-            catch (PlaywrightException exception) when (IsPageCrashException(exception))
+            catch (PlaywrightException exception) when (!cancellationToken.IsCancellationRequested && IsPageCrashException(exception))
             {
                 logger.LogWarning(exception, "RPA page crashed extracting profile for @{Handle}. Recreating the page.", handle);
                 ReportProgress(jobId, "Recovering profile", $"Chromium crashed while reading @{handle}", 0, discoveredLinks.Count, discoveredLinks.Count);
@@ -1145,7 +1178,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     ThemeSummary = classification.ThemeSummary
                 };
             }
-            catch (PlaywrightException exception) when (IsPageCrashException(exception))
+            catch (PlaywrightException exception) when (!cancellationToken.IsCancellationRequested && IsPageCrashException(exception))
             {
                 lastCrashException = exception;
                 logger.LogWarning(exception, "RPA page crashed reading post {PostUrl} on attempt {Attempt}.", postUrl, attempt);
@@ -1269,6 +1302,17 @@ internal sealed partial class RpaInstagramInspectionProvider(
         try
         {
             await context.CloseAsync();
+        }
+        catch (PlaywrightException)
+        {
+        }
+    }
+
+    private static async Task TryCloseBrowserAsync(IBrowser browser)
+    {
+        try
+        {
+            await browser.CloseAsync();
         }
         catch (PlaywrightException)
         {
