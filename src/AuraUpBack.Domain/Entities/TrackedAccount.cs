@@ -17,6 +17,7 @@ public sealed class TrackedAccount
     public bool MonitoringEnabled { get; set; }
     public string MonitoringPrompt { get; set; } = string.Empty;
     public int CheckEveryMinutes { get; set; } = 60;
+    public int OutlierNotificationMultiplier { get; set; } = 2;
     public string LastResearchSummary { get; set; } = string.Empty;
     public DateTime? LastInspectedAtUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -24,7 +25,13 @@ public sealed class TrackedAccount
     public List<TrackedPost> Posts { get; set; } = [];
     public List<AccountMetricSnapshot> MetricSnapshots { get; set; } = [];
 
-    public static TrackedAccount Create(string handle, string monitoringPrompt, bool monitoringEnabled, int checkEveryMinutes, DateTime nowUtc)
+    public static TrackedAccount Create(
+        string handle,
+        string monitoringPrompt,
+        bool monitoringEnabled,
+        int checkEveryMinutes,
+        int outlierNotificationMultiplier,
+        DateTime nowUtc)
     {
         return new TrackedAccount
         {
@@ -32,16 +39,23 @@ public sealed class TrackedAccount
             MonitoringPrompt = monitoringPrompt.Trim(),
             MonitoringEnabled = monitoringEnabled,
             CheckEveryMinutes = Math.Max(1, checkEveryMinutes),
+            OutlierNotificationMultiplier = NormalizeOutlierNotificationMultiplier(outlierNotificationMultiplier),
             CreatedAtUtc = nowUtc,
             UpdatedAtUtc = nowUtc
         };
     }
 
-    public void ConfigureMonitoring(string monitoringPrompt, bool monitoringEnabled, int checkEveryMinutes, DateTime nowUtc)
+    public void ConfigureMonitoring(
+        string monitoringPrompt,
+        bool monitoringEnabled,
+        int checkEveryMinutes,
+        int outlierNotificationMultiplier,
+        DateTime nowUtc)
     {
         MonitoringPrompt = monitoringPrompt.Trim();
         MonitoringEnabled = monitoringEnabled;
         CheckEveryMinutes = Math.Max(1, checkEveryMinutes);
+        OutlierNotificationMultiplier = NormalizeOutlierNotificationMultiplier(outlierNotificationMultiplier);
         UpdatedAtUtc = nowUtc;
     }
 
@@ -144,6 +158,11 @@ public sealed class TrackedAccount
     private static string NormalizeHandle(string handle)
     {
         return handle.Trim().TrimStart('@').ToLowerInvariant();
+    }
+
+    private static int NormalizeOutlierNotificationMultiplier(int multiplier)
+    {
+        return Math.Clamp(multiplier, 2, 100);
     }
 
     private void CaptureMonthlyMetrics(DateTime nowUtc)

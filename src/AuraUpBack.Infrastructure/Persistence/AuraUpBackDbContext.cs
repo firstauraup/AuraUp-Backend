@@ -132,6 +132,9 @@ internal sealed class AuraUpBackDbContext(DbContextOptions<AuraUpBackDbContext> 
             entity.Property(x => x.Message).HasMaxLength(4_000);
             entity.Property(x => x.Severity).HasMaxLength(60);
             entity.HasIndex(x => x.AccountId);
+            entity.HasIndex(x => new { x.AccountId, x.ExternalPostId, x.NotificationMultiplier })
+                .IsUnique()
+                .HasFilter("\"NotificationMultiplier\" > 0");
             entity.HasIndex(x => x.CreatedAtUtc);
         });
 

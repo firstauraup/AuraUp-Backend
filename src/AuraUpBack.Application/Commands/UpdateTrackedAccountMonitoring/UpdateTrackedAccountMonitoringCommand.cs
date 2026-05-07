@@ -8,7 +8,8 @@ public sealed record UpdateTrackedAccountMonitoringCommand(
     Guid AccountId,
     string MonitoringPrompt,
     bool MonitoringEnabled,
-    int CheckEveryMinutes) : Abstractions.ICommand<TrackedAccountOverviewDto>;
+    int CheckEveryMinutes,
+    int OutlierNotificationMultiplier) : Abstractions.ICommand<TrackedAccountOverviewDto>;
 
 internal sealed class UpdateTrackedAccountMonitoringCommandHandler(ITrackedAccountRepository trackedAccountRepository)
     : Abstractions.ICommandHandler<UpdateTrackedAccountMonitoringCommand, TrackedAccountOverviewDto>
@@ -22,6 +23,7 @@ internal sealed class UpdateTrackedAccountMonitoringCommandHandler(ITrackedAccou
             command.MonitoringPrompt,
             command.MonitoringEnabled,
             command.CheckEveryMinutes,
+            command.OutlierNotificationMultiplier,
             DateTime.UtcNow);
 
         await trackedAccountRepository.UpsertAsync(account, cancellationToken);

@@ -25,6 +25,16 @@ internal sealed class DbAlertSignalRepository(IDbContextFactory<AuraUpBackDbCont
             cancellationToken);
     }
 
+    public async Task<int> GetHighestNotificationMultiplierAsync(Guid accountId, string externalPostId, CancellationToken cancellationToken)
+    {
+        await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await dbContext.AlertSignals
+            .Where(x => x.AccountId == accountId && x.ExternalPostId == externalPostId)
+            .Select(x => x.NotificationMultiplier)
+            .DefaultIfEmpty(0)
+            .MaxAsync(cancellationToken);
+    }
+
     public async Task AddAsync(AlertSignal signal, CancellationToken cancellationToken)
     {
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);

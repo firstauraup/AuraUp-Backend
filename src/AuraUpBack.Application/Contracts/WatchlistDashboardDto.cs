@@ -7,6 +7,8 @@ public sealed record WatchlistAccountItemDto(
     string ProfileImageUrl,
     string ProfileImageObjectKey,
     bool MonitoringEnabled,
+    int CheckEveryMinutes,
+    int OutlierNotificationMultiplier,
     DateTime? LastInspectedAtUtc,
     decimal BestMultiplier,
     long TopViews,
@@ -43,6 +45,7 @@ public sealed record AlertSignalDto(
     string Title,
     string Message,
     string Severity,
+    int NotificationMultiplier,
     DateTime CreatedAtUtc);
 
 public sealed record WatchlistDashboardDto(

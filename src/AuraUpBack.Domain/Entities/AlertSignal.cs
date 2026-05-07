@@ -8,5 +8,6 @@ public sealed class AlertSignal
     public string Title { get; set; } = string.Empty;
     public string Message { get; set; } = string.Empty;
     public string Severity { get; set; } = "info";
+    public int NotificationMultiplier { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

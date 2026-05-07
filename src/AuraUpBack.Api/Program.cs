@@ -813,7 +813,8 @@ app.MapPost("/api/accounts", async (
             request.Handle,
             request.MonitoringPrompt,
             request.MonitoringEnabled,
-            Math.Max(1, request.CheckEveryMinutes)),
+            Math.Max(1, request.CheckEveryMinutes),
+            Math.Max(2, request.OutlierNotificationMultiplier)),
         cancellationToken);
 
     return Results.Ok(result);
@@ -837,7 +838,8 @@ app.MapPut("/api/accounts/{accountId:guid}", async (
             accountId,
             request.MonitoringPrompt,
             request.MonitoringEnabled,
-            Math.Max(1, request.CheckEveryMinutes)),
+            Math.Max(1, request.CheckEveryMinutes),
+            Math.Max(2, request.OutlierNotificationMultiplier)),
         cancellationToken);
 
     return Results.Ok(result);
@@ -1467,6 +1469,7 @@ static async Task<AuraUpBack.Application.Contracts.TrackedAccountOverviewDto> To
         overview.MonitoringEnabled,
         overview.MonitoringPrompt,
         overview.CheckEveryMinutes,
+        overview.OutlierNotificationMultiplier,
         overview.LastResearchSummary,
         overview.LastInspectedAtUtc,
         posts);
@@ -1612,6 +1615,8 @@ static async Task<AuraUpBack.Application.Contracts.WatchlistDashboardDto> ToClie
             avatarUrl,
             account.ProfileImageObjectKey,
             account.MonitoringEnabled,
+            account.CheckEveryMinutes,
+            account.OutlierNotificationMultiplier,
             account.LastInspectedAtUtc,
             account.BestMultiplier,
             account.TopViews,
@@ -1754,12 +1759,14 @@ public sealed record RegisterTrackedAccountRequest(
     string Handle,
     string MonitoringPrompt,
     bool MonitoringEnabled,
-    int CheckEveryMinutes);
+    int CheckEveryMinutes,
+    int OutlierNotificationMultiplier = 2);
 
 public sealed record UpdateTrackedAccountMonitoringRequest(
     string MonitoringPrompt,
     bool MonitoringEnabled,
-    int CheckEveryMinutes);
+    int CheckEveryMinutes,
+    int OutlierNotificationMultiplier = 2);
 
 public sealed record ConnectInstagramIntegrationRequest(
     string Username,

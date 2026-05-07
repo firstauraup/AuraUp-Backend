@@ -49,6 +49,7 @@ internal static class AccountMappings
             account.MonitoringEnabled,
             account.MonitoringPrompt,
             account.CheckEveryMinutes,
+            account.OutlierNotificationMultiplier,
             account.LastResearchSummary,
             account.LastInspectedAtUtc,
             posts);

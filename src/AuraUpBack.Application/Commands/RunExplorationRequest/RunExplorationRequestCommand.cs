@@ -23,7 +23,7 @@ internal sealed class RunExplorationRequestCommandHandler(
         {
             var nowUtc = DateTime.UtcNow;
             var account = await trackedAccountRepository.GetByHandleAsync(request.AccountHandle, cancellationToken)
-                ?? TrackedAccount.Create(request.AccountHandle, request.ResearchPrompt, false, 60, nowUtc);
+                ?? TrackedAccount.Create(request.AccountHandle, request.ResearchPrompt, false, 60, 2, nowUtc);
 
             var knownReels = account.GetReels();
 

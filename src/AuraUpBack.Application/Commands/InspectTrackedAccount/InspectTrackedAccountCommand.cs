@@ -128,39 +128,54 @@ internal sealed class InspectTrackedAccountCommandHandler(
             totalDiscoveredPosts,
             totalNewPostsFound);
 
-        var strongestPost = account.GetReels()
-            .Where(x => x.IsOutlier)
+        var notificationThreshold = Math.Max(2, account.OutlierNotificationMultiplier);
+        var postsToNotify = account.GetReels()
+            .Where(x => x.PerformanceMultiplier >= notificationThreshold)
             .OrderByDescending(x => x.PerformanceMultiplier)
-            .FirstOrDefault();
+            .ThenByDescending(x => x.Views)
+            .ToList();
 
-        if (strongestPost is not null)
+        foreach (var post in postsToNotify)
         {
-            var alertAlreadyExists = await alertSignalRepository.ExistsAsync(account.Id, strongestPost.ExternalId, cancellationToken);
-            if (!alertAlreadyExists)
-            {
-                var alert = new AlertSignal
-                {
-                    AccountId = account.Id,
-                    ExternalPostId = strongestPost.ExternalId,
-                    Severity = strongestPost.PerformanceMultiplier >= 10m ? "critical" : "high",
-                    Title = $"Outlier detectado en @{account.Handle}",
-                    Message = $"El post {strongestPost.ExternalId} alcanzó {strongestPost.PerformanceLabel} vs el promedio.",
-                    CreatedAtUtc = DateTime.UtcNow
-                };
+            var notificationMultiplier = ResolveNotificationMultiplier(post.PerformanceMultiplier);
+            var highestNotifiedMultiplier = await alertSignalRepository.GetHighestNotificationMultiplierAsync(
+                account.Id,
+                post.ExternalId,
+                cancellationToken);
 
-                await alertSignalRepository.AddAsync(alert, cancellationToken);
-                try
-                {
-                    await emailNotificationService.SendViralAlertAsync(account, strongestPost, alert, cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Viral alert email failed for account {AccountId} post {PostId}.", account.Id, strongestPost.Id);
-                }
+            if (highestNotifiedMultiplier >= notificationMultiplier)
+            {
+                continue;
+            }
+
+            var alert = new AlertSignal
+            {
+                AccountId = account.Id,
+                ExternalPostId = post.ExternalId,
+                Severity = notificationMultiplier >= 10 ? "critical" : "high",
+                Title = $"Outlier detectado en @{account.Handle}",
+                Message = $"El reel {post.ExternalId} alcanzó {post.PerformanceLabel} vs el promedio. Umbral configurado: x{notificationThreshold}.",
+                NotificationMultiplier = notificationMultiplier,
+                CreatedAtUtc = DateTime.UtcNow
+            };
+
+            await alertSignalRepository.AddAsync(alert, cancellationToken);
+            try
+            {
+                await emailNotificationService.SendViralAlertAsync(account, post, alert, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Viral alert email failed for account {AccountId} post {PostId}.", account.Id, post.Id);
             }
         }
 
         return account.ToOverviewDto();
+    }
+
+    private static int ResolveNotificationMultiplier(decimal performanceMultiplier)
+    {
+        return Math.Max(0, (int)Math.Floor(performanceMultiplier));
     }
 
     private void ReportProgress(

@@ -36,6 +36,8 @@ internal sealed class GetWatchlistDashboardQueryHandler(
                     account.ProfileImageUrl,
                     account.ProfileImageObjectKey,
                     account.MonitoringEnabled,
+                    account.CheckEveryMinutes,
+                    account.OutlierNotificationMultiplier,
                     account.LastInspectedAtUtc,
                     reels.Count == 0 ? 0m : reels.Max(x => x.PerformanceMultiplier),
                     reels.Count == 0 ? 0 : reels.Max(x => x.Views),
@@ -75,6 +77,7 @@ internal sealed class GetWatchlistDashboardQueryHandler(
                     alert.Title,
                     alert.Message,
                     alert.Severity,
+                    alert.NotificationMultiplier,
                     alert.CreatedAtUtc);
             })
             .ToList();

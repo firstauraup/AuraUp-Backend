@@ -25,6 +25,19 @@ internal sealed class FileAlertSignalRepository(FileAuraUpBackStore store) : IAl
             cancellationToken);
     }
 
+    public Task<int> GetHighestNotificationMultiplierAsync(Guid accountId, string externalPostId, CancellationToken cancellationToken)
+    {
+        return store.ReadAsync(
+            snapshot => snapshot.Alerts
+                .Where(x =>
+                    x.AccountId == accountId &&
+                    string.Equals(x.ExternalPostId, externalPostId, StringComparison.OrdinalIgnoreCase))
+                .Select(x => x.NotificationMultiplier)
+                .DefaultIfEmpty(0)
+                .Max(),
+            cancellationToken);
+    }
+
     public Task AddAsync(AlertSignal signal, CancellationToken cancellationToken)
     {
         return store.WriteAsync(

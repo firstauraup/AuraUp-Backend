@@ -9,7 +9,8 @@ public sealed record RegisterTrackedAccountCommand(
     string Handle,
     string MonitoringPrompt,
     bool MonitoringEnabled,
-    int CheckEveryMinutes) : Abstractions.ICommand<TrackedAccountOverviewDto>;
+    int CheckEveryMinutes,
+    int OutlierNotificationMultiplier) : Abstractions.ICommand<TrackedAccountOverviewDto>;
 
 internal sealed class RegisterTrackedAccountCommandHandler(ITrackedAccountRepository trackedAccountRepository)
     : Abstractions.ICommandHandler<RegisterTrackedAccountCommand, TrackedAccountOverviewDto>
@@ -26,6 +27,7 @@ internal sealed class RegisterTrackedAccountCommandHandler(ITrackedAccountReposi
                 command.MonitoringPrompt,
                 command.MonitoringEnabled,
                 command.CheckEveryMinutes,
+                command.OutlierNotificationMultiplier,
                 nowUtc);
         }
         else
@@ -34,6 +36,7 @@ internal sealed class RegisterTrackedAccountCommandHandler(ITrackedAccountReposi
                 command.MonitoringPrompt,
                 command.MonitoringEnabled,
                 command.CheckEveryMinutes,
+                command.OutlierNotificationMultiplier,
                 nowUtc);
         }
 

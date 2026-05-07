@@ -63,6 +63,7 @@ internal sealed class DbInitializationHostedService(
         await using var dbContext = await dbContextFactory.CreateDbContextAsync(cancellationToken);
         await dbContext.Database.EnsureCreatedAsync(cancellationToken);
         await EnsureTrackedAccountsMediaColumnsAsync(dbContext, cancellationToken);
+        await EnsureTrackedAccountsNotificationColumnsAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsTopicColumnsAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsMediaColumnsAsync(dbContext, cancellationToken);
         await EnsureTrackedPostsIsReelColumnAsync(dbContext, cancellationToken);
@@ -73,6 +74,7 @@ internal sealed class DbInitializationHostedService(
         await EnsureUserTablesAsync(dbContext, cancellationToken);
         await EnsureViralIdeaTablesAsync(dbContext, cancellationToken);
         await EnsureApplicationFormSubmissionTableAsync(dbContext, cancellationToken);
+        await EnsureAlertSignalNotificationColumnsAsync(dbContext, cancellationToken);
 
         if (await HasAnyDataAsync(dbContext, cancellationToken))
         {
@@ -143,6 +145,16 @@ internal sealed class DbInitializationHostedService(
             """
             ALTER TABLE "TrackedAccounts" ADD COLUMN IF NOT EXISTS "ProfileImageUrl" character varying(1000) NOT NULL DEFAULT '';
             ALTER TABLE "TrackedAccounts" ADD COLUMN IF NOT EXISTS "ProfileImageObjectKey" character varying(1000) NOT NULL DEFAULT '';
+            """;
+
+        await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task EnsureTrackedAccountsNotificationColumnsAsync(AuraUpBackDbContext dbContext, CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            ALTER TABLE "TrackedAccounts" ADD COLUMN IF NOT EXISTS "OutlierNotificationMultiplier" integer NOT NULL DEFAULT 2;
             """;
 
         await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
@@ -315,6 +327,17 @@ internal sealed class DbInitializationHostedService(
             );
             CREATE INDEX IF NOT EXISTS "IX_ApplicationFormSubmissions_CreatedAtUtc" ON "ApplicationFormSubmissions" ("CreatedAtUtc");
             CREATE INDEX IF NOT EXISTS "IX_ApplicationFormSubmissions_Email" ON "ApplicationFormSubmissions" ("Email");
+            """;
+
+        await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);
+    }
+
+    private static async Task EnsureAlertSignalNotificationColumnsAsync(AuraUpBackDbContext dbContext, CancellationToken cancellationToken)
+    {
+        const string sql =
+            """
+            ALTER TABLE "AlertSignals" ADD COLUMN IF NOT EXISTS "NotificationMultiplier" integer NOT NULL DEFAULT 0;
+            CREATE UNIQUE INDEX IF NOT EXISTS "UX_AlertSignals_AccountId_ExternalPostId_NotificationMultiplier_Positive" ON "AlertSignals" ("AccountId", "ExternalPostId", "NotificationMultiplier") WHERE "NotificationMultiplier" > 0;
             """;
 
         await dbContext.Database.ExecuteSqlRawAsync(sql, cancellationToken);

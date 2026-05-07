@@ -11,6 +11,7 @@ public sealed record TrackedAccountOverviewDto(
     bool MonitoringEnabled,
     string MonitoringPrompt,
     int CheckEveryMinutes,
+    int OutlierNotificationMultiplier,
     string LastResearchSummary,
     DateTime? LastInspectedAtUtc,
     IReadOnlyCollection<PostSummaryDto> Posts);
