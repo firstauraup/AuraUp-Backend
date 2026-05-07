@@ -151,6 +151,11 @@ public sealed class TrackedPost
 
         return caption.Contains("captured via RPA", StringComparison.OrdinalIgnoreCase) ||
                caption.Contains("capturada", StringComparison.OrdinalIgnoreCase) &&
-               caption.Contains("RPA", StringComparison.OrdinalIgnoreCase);
+               caption.Contains("RPA", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("sorry, this page isn't available", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("this page isn't available", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("esta página no está disponible", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("esta pagina no esta disponible", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("contenido no disponible", StringComparison.OrdinalIgnoreCase);
     }
 }

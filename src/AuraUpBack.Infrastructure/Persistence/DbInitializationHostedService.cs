@@ -231,6 +231,11 @@ internal sealed class DbInitializationHostedService(
               AND (
                   LOWER("Caption") LIKE 'instagram post % captured via rpa for @%'
                   OR LOWER("Caption") LIKE 'publicaci%n %capturad% rpa para @%'
+                  OR LOWER("Caption") LIKE '%sorry, this page isn''t available%'
+                  OR LOWER("Caption") LIKE '%this page isn''t available%'
+                  OR LOWER("Caption") LIKE '%esta página no está disponible%'
+                  OR LOWER("Caption") LIKE '%esta pagina no esta disponible%'
+                  OR LOWER("Caption") LIKE '%contenido no disponible%'
               );
             """;
 

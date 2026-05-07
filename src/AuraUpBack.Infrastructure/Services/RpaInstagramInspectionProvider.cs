@@ -291,9 +291,11 @@ internal sealed partial class RpaInstagramInspectionProvider(
                 Bio = profileData.Bio,
                 FollowersCount = profileData.FollowersCount,
                 ResearchSummary =
-                    posts.Count == 0
-                        ? $"RPA audit for @{normalizedHandle}. No new reels required analysis."
-                        : failedCandidateCount == 0
+                    posts.Count == 0 && failedCandidateCount > 0
+                        ? $"RPA audit for @{normalizedHandle}. {seenExternalIds.Count} candidate reels were discovered, but none returned readable metrics. No reel was saved from this pass."
+                        : posts.Count == 0
+                            ? $"RPA audit for @{normalizedHandle}. No new reels required analysis."
+                            : failedCandidateCount == 0
                             ? $"RPA audit for @{normalizedHandle}. {newPosts.Count} new reels were analyzed and {refreshedPostsCount} known reels were refreshed. Average estimated views: {averageViews:0}. Strongest new reel: {strongestPost?.Views ?? 0:n0} views. Prompt focus: {researchPrompt}"
                             : $"RPA audit for @{normalizedHandle}. {newPosts.Count} new reels were analyzed, {refreshedPostsCount} known reels were refreshed, and {failedCandidateCount} candidate reels could not be opened in this pass. Average estimated views: {averageViews:0}. Strongest new reel: {strongestPost?.Views ?? 0:n0} views. Prompt focus: {researchPrompt}",
                 SeenPostExternalIds = seenExternalIds,
@@ -560,7 +562,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                     $"Found {discoveredLinks.Select(link => ExtractExternalId(link, handle, 0)).Count(externalId => !knownIds.Contains(externalId))} new candidate reels",
                     0,
                     discoveredLinks.Select(link => ExtractExternalId(link, handle, 0)).Count(externalId => !knownIds.Contains(externalId)),
-                    discoveredLinks.Select(link => ExtractExternalId(link, handle, 0)).Count(externalId => !knownIds.Contains(externalId)));
+                    0);
 
                 if (discoveredLinks.Count >= maxPostsToCollect)
                 {
@@ -592,7 +594,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
             catch (PlaywrightException exception) when (!cancellationToken.IsCancellationRequested && IsPageCrashException(exception))
             {
                 logger.LogWarning(exception, "RPA page crashed extracting profile for @{Handle}. Recreating the page.", handle);
-                ReportProgress(jobId, "Recovering profile", $"Chromium crashed while reading @{handle}", 0, discoveredLinks.Count, discoveredLinks.Count);
+                    ReportProgress(jobId, "Recovering profile", $"Chromium crashed while reading @{handle}", 0, discoveredLinks.Count, 0);
 
                 var fallbackSnapshot = await TryReadProfileSnapshotViaHttpAsync(handle);
                 if (fallbackSnapshot is not null && fallbackSnapshot.PostLinks.Count > 0)
@@ -612,7 +614,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
                         $"Recovered {discoveredLinks.Count} reels for @{handle} without Chromium",
                         0,
                         discoveredLinks.Count,
-                        discoveredLinks.Select(link => ExtractExternalId(link, handle, 0)).Count(externalId => !knownIds.Contains(externalId)));
+                        0);
                     break;
                 }
 
@@ -640,12 +642,15 @@ internal sealed partial class RpaInstagramInspectionProvider(
             .FirstOrDefault(x => x.Length > 20 && !x.Contains("followers", StringComparison.OrdinalIgnoreCase))
             ?? $"Instagram account snapshot for @{handle}";
 
-        var postLinks = discoveredLinks.ToList();
+        var postLinks = discoveredLinks
+            .Take(maxPostsToCollect)
+            .ToList();
         if (postLinks.Count == 0)
         {
             var rawHtml = await page.ContentAsync();
             postLinks = ExtractPostUrlsFromMarkup(rawHtml)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(maxPostsToCollect)
                 .ToList();
         }
 
@@ -687,7 +692,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
               const anchors = Array.from(document.querySelectorAll('a[href]'));
               return anchors
                 .map((anchor) => anchor.href || "")
-                .filter((href) => /\/(reel|tv)\//i.test(href));
+                .filter((href) => /\/(reel|reels|tv)\//i.test(href));
             }
             """);
 
@@ -702,7 +707,7 @@ internal sealed partial class RpaInstagramInspectionProvider(
         await page.EvaluateAsync(
             """
             () => {
-              const reelAnchors = Array.from(document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"], a[href*="/tv/"]'));
+              const reelAnchors = Array.from(document.querySelectorAll('a[href*="/reel/"], a[href*="/reels/"], a[href*="/p/"], a[href*="/tv/"]'));
               const lastAnchor = reelAnchors.at(-1);
               if (lastAnchor instanceof HTMLElement) {
                 lastAnchor.scrollIntoView({ behavior: 'instant', block: 'end' });
@@ -1036,30 +1041,43 @@ internal sealed partial class RpaInstagramInspectionProvider(
 
                       // DOM fallback: scan visible text for "N views/plays/likes/comments".
                       const allText = bodyText.replace(/ /g, ' ');
+                      const metricValuePattern = '([\\d.,]+\\s*(?:[KkMmBb]|mil|millones?|million|billions?)?)';
                       if (!views) {
-                        const m = allText.match(/([\d.,]+\s*[KkMmBb]?)\s*(?:views|reproducciones|visualizaciones)/i);
+                        const m = allText.match(new RegExp(metricValuePattern + '\\s*(?:views|reproducciones|visualizaciones)', 'i'));
                         if (m) views = parseCount(m[1]);
                       }
                       if (!plays) {
-                        const m = allText.match(/([\d.,]+\s*[KkMmBb]?)\s*(?:plays|reproducciones)/i);
+                        const m = allText.match(new RegExp(metricValuePattern + '\\s*(?:plays|reproducciones)', 'i'));
                         if (m) plays = parseCount(m[1]);
                       }
                       if (!likes) {
                         // "Liked by user and 1,234 others" or "1,234 likes".
-                        const m = allText.match(/([\d.,]+\s*[KkMmBb]?)\s*(?:likes|me gusta|others|otras personas|más)/i);
+                        const m = allText.match(new RegExp(metricValuePattern + '\\s*(?:likes|me gusta|others|otras personas|más)', 'i'));
                         if (m) likes = parseCount(m[1]);
                         if (!likes) {
                           const likedByLink = document.querySelector('a[href$="/liked_by/"]');
                           if (likedByLink) likes = parseCount(likedByLink.textContent || '');
                         }
+                        if (!likes) {
+                          const m2 = allText.match(new RegExp('(?:Like|Me gusta)\\s+' + metricValuePattern, 'i'));
+                          if (m2) likes = parseCount(m2[1]);
+                        }
                       }
                       if (!comments) {
-                        const m = allText.match(/(?:View all\s+|Ver los\s+|Ver todos los\s+)?([\d.,]+\s*[KkMmBb]?)\s*comment(?:s|arios)?/i);
+                        const m = allText.match(new RegExp('(?:View all\\s+|Ver los\\s+|Ver todos los\\s+)?' + metricValuePattern + '\\s*comment(?:s|arios)?', 'i'));
                         if (m) comments = parseCount(m[1]);
+                        if (!comments) {
+                          const m2 = allText.match(new RegExp('(?:Comment|Comentarios?)\\s+' + metricValuePattern, 'i'));
+                          if (m2) comments = parseCount(m2[1]);
+                        }
                       }
                       if (!shares) {
-                        const m = allText.match(/([\d.,]+\s*[KkMmBb]?)\s*(?:shares?|compartidos?|veces compartido)/i);
+                        const m = allText.match(new RegExp(metricValuePattern + '\\s*(?:shares?|compartidos?|veces compartido)', 'i'));
                         if (m) shares = parseCount(m[1]);
+                        if (!shares) {
+                          const m2 = allText.match(new RegExp('(?:Repost|Compartir|Compartidos?)\\s+' + metricValuePattern, 'i'));
+                          if (m2) shares = parseCount(m2[1]);
+                        }
                       }
 
                       // Aria-label fallback on like/comment buttons.
@@ -1678,12 +1696,18 @@ internal sealed partial class RpaInstagramInspectionProvider(
 
         return caption.Contains("captured via RPA", StringComparison.OrdinalIgnoreCase) ||
                caption.Contains("capturada", StringComparison.OrdinalIgnoreCase) &&
-               caption.Contains("RPA", StringComparison.OrdinalIgnoreCase);
+               caption.Contains("RPA", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("sorry, this page isn't available", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("this page isn't available", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("esta página no está disponible", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("esta pagina no esta disponible", StringComparison.OrdinalIgnoreCase) ||
+               caption.Contains("contenido no disponible", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsReelPostType(string type)
     {
         return type.Equals("reel", StringComparison.OrdinalIgnoreCase) ||
+               type.Equals("reels", StringComparison.OrdinalIgnoreCase) ||
                type.Equals("tv", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1702,6 +1726,11 @@ internal sealed partial class RpaInstagramInspectionProvider(
         }
 
         var type = match.Groups["type"].Value.ToLowerInvariant();
+        if (type.Equals("reel", StringComparison.OrdinalIgnoreCase))
+        {
+            type = "reels";
+        }
+
         var id = match.Groups["id"].Value;
         if (string.IsNullOrWhiteSpace(id))
         {
@@ -1723,21 +1752,23 @@ internal sealed partial class RpaInstagramInspectionProvider(
     [GeneratedRegex(@"on Instagram:\s*(?<caption>.+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex TitleCaptionRegex();
 
-    [GeneratedRegex(@"/(?<type>reel|tv|p)/(?<id>[A-Za-z0-9_-]+)/", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"/(?<type>reels?|tv|p)/(?<id>[A-Za-z0-9_-]+)/", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PostUrlRegex();
 
-    [GeneratedRegex(@"\\u002F(?<type>reel|tv|p)\\u002F(?<id>[A-Za-z0-9_-]+)\\u002F", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\\u002F(?<type>reels?|tv|p)\\u002F(?<id>[A-Za-z0-9_-]+)\\u002F", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex EscapedPostUrlRegex();
 
     private static bool IsVideoPost(RpaPostSnapshot snapshot, string postUrl)
     {
         if (postUrl.Contains("/reel/", StringComparison.OrdinalIgnoreCase) ||
+            postUrl.Contains("/reels/", StringComparison.OrdinalIgnoreCase) ||
             postUrl.Contains("/tv/", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
         if (snapshot.PageUrl.Contains("/reel/", StringComparison.OrdinalIgnoreCase) ||
+            snapshot.PageUrl.Contains("/reels/", StringComparison.OrdinalIgnoreCase) ||
             snapshot.PageUrl.Contains("/tv/", StringComparison.OrdinalIgnoreCase))
         {
             return true;

@@ -27,7 +27,6 @@ internal sealed class InspectTrackedAccountCommandHandler(
 
         const int batchSize = 30;
         const int existingPostsRefreshCount = 12;
-        const int maxDiscoveryPosts = batchSize + existingPostsRefreshCount;
         const int maxBatches = 1;
         const int maxConsecutiveEmptyBatches = 1;
         var nowUtc = DateTime.UtcNow;
@@ -39,6 +38,8 @@ internal sealed class InspectTrackedAccountCommandHandler(
         var excludedExternalIds = new HashSet<string>(
             account.GetReels().Select(x => x.ExternalId),
             StringComparer.OrdinalIgnoreCase);
+        var refreshExistingPostsCount = Math.Min(existingPostsRefreshCount, excludedExternalIds.Count);
+        var maxDiscoveryPosts = batchSize + refreshExistingPostsCount;
 
         ReportProgress(
             command.JobId,
@@ -71,7 +72,7 @@ internal sealed class InspectTrackedAccountCommandHandler(
                     StartFromPostIndex = 0,
                     DesiredNewPosts = batchSize,
                     MaxDiscoveryPosts = maxDiscoveryPosts,
-                    RefreshExistingPostsCount = existingPostsRefreshCount,
+                    RefreshExistingPostsCount = refreshExistingPostsCount,
                     JobId = command.JobId
                 },
                 cancellationToken);
