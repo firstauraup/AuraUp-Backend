@@ -772,15 +772,6 @@ internal sealed partial class InstagramExplorerService(
 
     private static string ExtractHandle(string accountPath, string description, string html)
     {
-        if (!string.IsNullOrWhiteSpace(accountPath))
-        {
-            var candidate = accountPath.Trim('/').ToLowerInvariant();
-            if (!ReservedInstagramPaths.Contains(candidate))
-            {
-                return candidate;
-            }
-        }
-
         var ownerUsernameMatch = Regex.Match(
             html ?? string.Empty,
             "\"owner_username\":\"(?<handle>[A-Za-z0-9._]{2,})\"",
@@ -799,15 +790,6 @@ internal sealed partial class InstagramExplorerService(
             return ownerObjectMatch.Groups["handle"].Value.ToLowerInvariant();
         }
 
-        var usernameMatch = Regex.Match(
-            html ?? string.Empty,
-            "\"username\":\"(?<handle>[A-Za-z0-9._]{2,})\"",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        if (usernameMatch.Success && !ReservedInstagramPaths.Contains(usernameMatch.Groups["handle"].Value))
-        {
-            return usernameMatch.Groups["handle"].Value.ToLowerInvariant();
-        }
-
         var descriptionOwnerMatch = Regex.Match(
             description ?? string.Empty,
             @"-\s*(?<handle>[A-Za-z0-9._]{2,})\s+on\s+[^:]{3,120}:",
@@ -817,13 +799,31 @@ internal sealed partial class InstagramExplorerService(
             return descriptionOwnerMatch.Groups["handle"].Value.ToLowerInvariant();
         }
 
+        if (!string.IsNullOrWhiteSpace(accountPath))
+        {
+            var candidate = accountPath.Trim('/').ToLowerInvariant();
+            if (!ReservedInstagramPaths.Contains(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        var usernameMatch = Regex.Match(
+            html ?? string.Empty,
+            "\"username\":\"(?<handle>[A-Za-z0-9._]{2,})\"",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (usernameMatch.Success && !ReservedInstagramPaths.Contains(usernameMatch.Groups["handle"].Value))
+        {
+            return usernameMatch.Groups["handle"].Value.ToLowerInvariant();
+        }
+
         var match = Regex.Match(description ?? string.Empty, @"@?(?<handle>[A-Za-z0-9._]{2,})");
         return match.Success ? match.Groups["handle"].Value.ToLowerInvariant() : "unknown";
     }
 
     private static string ExtractExternalId(string url)
     {
-        var match = Regex.Match(url ?? string.Empty, @"/(?:reel|tv|p)/(?<id>[^/?#]+)/?", RegexOptions.IgnoreCase);
+        var match = Regex.Match(url ?? string.Empty, @"/(?:reels?|tv|p)/(?<id>[^/?#]+)/?", RegexOptions.IgnoreCase);
         return match.Success ? match.Groups["id"].Value : Guid.NewGuid().ToString("N");
     }
 
