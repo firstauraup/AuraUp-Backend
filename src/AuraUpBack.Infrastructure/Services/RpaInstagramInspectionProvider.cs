@@ -1150,20 +1150,22 @@ internal sealed partial class RpaInstagramInspectionProvider(
 
                 if (mediaInfoPayload is not null)
                 {
-                    likes = mediaInfoPayload.LikeCount;
-                    comments = mediaInfoPayload.CommentCount;
-                    shares = mediaInfoPayload.ShareCount;
-                    views = mediaInfoPayload.PlayCount;
+                    likes = PreferKnownMetric(mediaInfoPayload.LikeCount, likes);
+                    comments = PreferKnownMetric(mediaInfoPayload.CommentCount, comments);
+                    shares = PreferKnownMetric(mediaInfoPayload.ShareCount, shares);
                     igPlayCount = mediaInfoPayload.IgPlayCount;
                     fbPlayCount = mediaInfoPayload.FbPlayCount;
                     fbLikes = mediaInfoPayload.FbLikeCount;
                     fbComments = mediaInfoPayload.FbCommentCount;
+                    views = ResolveEffectiveViews(views, mediaInfoPayload);
                     if (!string.IsNullOrWhiteSpace(mediaInfoPayload.CaptionText))
                     {
                         caption = mediaInfoPayload.CaptionText.Trim();
                         classification = PostTopicClassifier.Classify(caption, snapshot.BodyText);
                     }
                 }
+
+                views = EstimateViewsFromEngagementWhenUnknown(views, likes);
 
                 if (IsInvalidRpaPlaceholder(canonicalUrl, externalId, caption, views, likes, comments, shares, igPlayCount, fbPlayCount, fbLikes, fbComments))
                 {
@@ -1698,6 +1700,33 @@ internal sealed partial class RpaInstagramInspectionProvider(
         return $"https://www.instagram.com/{NormalizeInstagramPostType(match.Groups["type"].Value)}/{id}/";
     }
 
+    private static long PreferKnownMetric(long providerValue, long fallbackValue)
+    {
+        return providerValue > 0 ? providerValue : fallbackValue;
+    }
+
+    private static long ResolveEffectiveViews(long fallbackViews, MediaInfoApiPayload mediaInfoPayload)
+    {
+        return new[]
+            {
+                fallbackViews,
+                mediaInfoPayload.PlayCount,
+                mediaInfoPayload.IgPlayCount,
+                mediaInfoPayload.FbPlayCount
+            }
+            .Max();
+    }
+
+    private static long EstimateViewsFromEngagementWhenUnknown(long views, long likes)
+    {
+        if (views > 0 || likes <= 0)
+        {
+            return views;
+        }
+
+        return likes > long.MaxValue / 8 ? long.MaxValue : likes * 8;
+    }
+
     private static bool IsInvalidRpaPlaceholder(
         string postUrl,
         string externalId,
@@ -1940,17 +1969,40 @@ internal sealed partial class RpaInstagramInspectionProvider(
 
             static long ReadLong(JsonElement parent, string name)
             {
-                if (!parent.TryGetProperty(name, out var prop))
+                if (TryReadLong(parent, name, out var directValue))
                 {
-                    return 0;
+                    return directValue;
                 }
 
-                return prop.ValueKind switch
+                foreach (var containerName in new[] { "clips_metadata", "media_info", "metrics" })
+                {
+                    if (parent.TryGetProperty(containerName, out var container) &&
+                        container.ValueKind == JsonValueKind.Object &&
+                        TryReadLong(container, name, out var nestedValue))
+                    {
+                        return nestedValue;
+                    }
+                }
+
+                return 0;
+            }
+
+            static bool TryReadLong(JsonElement parent, string name, out long value)
+            {
+                value = 0;
+                if (!parent.TryGetProperty(name, out var prop))
+                {
+                    return false;
+                }
+
+                value = prop.ValueKind switch
                 {
                     JsonValueKind.Number when prop.TryGetInt64(out var v) => v,
                     JsonValueKind.String when long.TryParse(prop.GetString(), out var v) => v,
                     _ => 0
                 };
+
+                return value > 0;
             }
 
             string captionText = string.Empty;
@@ -1965,8 +2017,14 @@ internal sealed partial class RpaInstagramInspectionProvider(
             return new MediaInfoApiPayload(
                 LikeCount: ReadLong(item, "like_count"),
                 CommentCount: ReadLong(item, "comment_count"),
-                ShareCount: ReadLong(item, "media_repost_count"),
-                PlayCount: ReadLong(item, "play_count"),
+                ShareCount: new[] { ReadLong(item, "media_repost_count"), ReadLong(item, "share_count") }.Max(),
+                PlayCount: new[]
+                {
+                    ReadLong(item, "play_count"),
+                    ReadLong(item, "video_play_count"),
+                    ReadLong(item, "video_view_count"),
+                    ReadLong(item, "view_count")
+                }.Max(),
                 IgPlayCount: ReadLong(item, "ig_play_count"),
                 FbPlayCount: ReadLong(item, "fb_play_count"),
                 FbLikeCount: ReadLong(item, "fb_like_count"),
