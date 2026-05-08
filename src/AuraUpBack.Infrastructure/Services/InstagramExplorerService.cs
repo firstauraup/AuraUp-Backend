@@ -148,7 +148,8 @@ internal sealed partial class InstagramExplorerService(
             return cachedReel;
         }
 
-        var reel = await WithExplorerContextAsync(
+        var reel = await TryReadReelFromSnapshotHtmlAsync(normalizedUrl, cancellationToken);
+        reel ??= await WithExplorerContextAsync(
             async context => await ReadReelAsync(context, normalizedUrl, cancellationToken),
             cancellationToken);
 
@@ -305,6 +306,61 @@ internal sealed partial class InstagramExplorerService(
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private async Task<ExplorerReel?> TryReadReelFromSnapshotHtmlAsync(string normalizedUrl, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await SnapshotHttpClient.GetAsync(
+                normalizedUrl,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var rawHtml = await ReadHtmlPrefixAsync(response.Content, cancellationToken);
+            var title = ExtractMetaContent(rawHtml, "og:title", ExtractHtmlTitle(rawHtml));
+            var description = ExtractMetaContent(rawHtml, "og:description");
+            var accountHandle = ExtractHandle(string.Empty, description, rawHtml);
+            if (string.IsNullOrWhiteSpace(accountHandle) ||
+                string.Equals(accountHandle, "unknown", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var likes = TryParseMetric(description, "likes");
+            var comments = TryParseMetric(description, "comments");
+            var shares = Math.Max(
+                TryParseMetric(description, "shares"),
+                TryParseMetric(description, "shared"));
+            var views = Math.Max(TryParseMetric(description, "views"), likes > 0 ? likes * 8 : 0);
+            var displayName = ExtractReelDisplayName(title, accountHandle);
+
+            return new ExplorerReel(
+                ExtractExternalId(normalizedUrl),
+                ExtractCaption(title, description, accountHandle),
+                normalizedUrl,
+                ExtractMetaContent(rawHtml, "og:image"),
+                TryParseReelDescriptionDate(description),
+                views,
+                likes,
+                comments,
+                shares == 0 ? Math.Max(0, likes / 40) : shares,
+                new ExplorerAccountPreview(
+                    accountHandle,
+                    displayName,
+                    string.Empty,
+                    string.Empty,
+                    0));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogDebug(exception, "Explorer could not read reel snapshot metadata for {Url}.", normalizedUrl);
+            return null;
+        }
     }
 
     private async Task<ExplorerReel?> ReadReelAsync(IBrowserContext context, string reelUrl, CancellationToken cancellationToken)
@@ -752,6 +808,15 @@ internal sealed partial class InstagramExplorerService(
             return usernameMatch.Groups["handle"].Value.ToLowerInvariant();
         }
 
+        var descriptionOwnerMatch = Regex.Match(
+            description ?? string.Empty,
+            @"-\s*(?<handle>[A-Za-z0-9._]{2,})\s+on\s+[^:]{3,120}:",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (descriptionOwnerMatch.Success && !ReservedInstagramPaths.Contains(descriptionOwnerMatch.Groups["handle"].Value))
+        {
+            return descriptionOwnerMatch.Groups["handle"].Value.ToLowerInvariant();
+        }
+
         var match = Regex.Match(description ?? string.Empty, @"@?(?<handle>[A-Za-z0-9._]{2,})");
         return match.Success ? match.Groups["handle"].Value.ToLowerInvariant() : "unknown";
     }
@@ -790,6 +855,39 @@ internal sealed partial class InstagramExplorerService(
         return DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out var parsed)
             ? parsed
             : null;
+    }
+
+    private static DateTime? TryParseReelDescriptionDate(string description)
+    {
+        var match = Regex.Match(
+            description ?? string.Empty,
+            @"\son\s+(?<date>[A-Za-z]+\s+\d{1,2},\s+\d{4})\s*:",
+            RegexOptions.CultureInvariant);
+
+        return match.Success &&
+               DateTime.TryParse(
+                   match.Groups["date"].Value,
+                   CultureInfo.InvariantCulture,
+                   DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                   out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private static string ExtractReelDisplayName(string title, string handle)
+    {
+        var match = Regex.Match(
+            title ?? string.Empty,
+            @"^(?<name>.+?)\s+on Instagram\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        if (!match.Success)
+        {
+            return handle;
+        }
+
+        var displayName = WebUtility.HtmlDecode(match.Groups["name"].Value).Trim();
+        return string.IsNullOrWhiteSpace(displayName) ? handle : displayName;
     }
 
     private static long TryParseFollowerCount(string description)
@@ -905,7 +1003,12 @@ internal sealed partial class InstagramExplorerService(
             throw new InvalidOperationException($"Instagram account @{normalizedHandle} could not be read.");
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await ReadHtmlPrefixAsync(response.Content, cancellationToken);
+    }
+
+    private static async Task<string> ReadHtmlPrefixAsync(HttpContent content, CancellationToken cancellationToken)
+    {
+        await using var stream = await content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
 
         var buffer = new char[8_192];

@@ -1,4 +1,5 @@
 using AuraUpBack.Application.Contracts;
+using AuraUpBack.Domain.Exceptions;
 using AuraUpBack.Domain.Models;
 using AuraUpBack.Domain.Services;
 
@@ -22,10 +23,25 @@ internal sealed class AnalyzeExternalReelAccountQueryHandler(
             throw new InvalidOperationException("The reel account could not be detected.");
         }
 
-        var snapshot = await instagramExplorerService.GetAccountSnapshotAsync(reel.Account.Handle, 5, cancellationToken);
-        return new ExplorerAccountSnapshotDto(
-            ToDto(snapshot.Account),
-            snapshot.Reels.Select(ToDto).ToList());
+        try
+        {
+            var snapshot = await instagramExplorerService.GetAccountSnapshotAsync(reel.Account.Handle, 5, cancellationToken);
+            var reels = snapshot.Reels.Select(ToDto).ToList();
+            if (!reels.Any(x => string.Equals(x.ExternalId, reel.ExternalId, StringComparison.OrdinalIgnoreCase)))
+            {
+                reels.Insert(0, ToDto(reel));
+            }
+
+            return new ExplorerAccountSnapshotDto(
+                ToDto(snapshot.Account),
+                reels);
+        }
+        catch (InstagramRateLimitException)
+        {
+            return new ExplorerAccountSnapshotDto(
+                ToDto(reel.Account),
+                new[] { ToDto(reel) });
+        }
     }
 
     private static ExplorerAccountPreviewDto ToDto(ExplorerAccountPreview account)
