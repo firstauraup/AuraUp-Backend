@@ -772,6 +772,15 @@ internal sealed partial class InstagramExplorerService(
 
     private static string ExtractHandle(string accountPath, string description, string html)
     {
+        var descriptionOwnerMatch = Regex.Match(
+            description ?? string.Empty,
+            @"-\s*(?<handle>[A-Za-z0-9._]{2,})\s+on\s+[^:]{3,120}:",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (descriptionOwnerMatch.Success && !ReservedInstagramPaths.Contains(descriptionOwnerMatch.Groups["handle"].Value))
+        {
+            return descriptionOwnerMatch.Groups["handle"].Value.ToLowerInvariant();
+        }
+
         var ownerUsernameMatch = Regex.Match(
             html ?? string.Empty,
             "\"owner_username\":\"(?<handle>[A-Za-z0-9._]{2,})\"",
@@ -788,15 +797,6 @@ internal sealed partial class InstagramExplorerService(
         if (ownerObjectMatch.Success)
         {
             return ownerObjectMatch.Groups["handle"].Value.ToLowerInvariant();
-        }
-
-        var descriptionOwnerMatch = Regex.Match(
-            description ?? string.Empty,
-            @"-\s*(?<handle>[A-Za-z0-9._]{2,})\s+on\s+[^:]{3,120}:",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        if (descriptionOwnerMatch.Success && !ReservedInstagramPaths.Contains(descriptionOwnerMatch.Groups["handle"].Value))
-        {
-            return descriptionOwnerMatch.Groups["handle"].Value.ToLowerInvariant();
         }
 
         if (!string.IsNullOrWhiteSpace(accountPath))
